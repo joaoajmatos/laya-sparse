@@ -376,3 +376,16 @@ def test_the_report_says_when_a_row_is_not_counted(tmp_path):
     from experiments import report2 as R
     text = " ".join(x["text"] for x in R.section_parity(S.build_summary(tmp_path, n_boot=50), "gpu")["statements"])
     assert "NOT COUNTED: fewer than 20 items" in text
+
+
+def test_the_report_calls_an_undetermined_parity_undetermined_not_failed(tmp_path):
+    """Every row below the minimum item count: no verdict, and the text must not claim a disagreement above the margin."""
+    cpu = [rec("t%d" % i, "tc%d" % i, "dev", True) for i in range(2)]
+    write(tmp_path, "native.none.cpu.L8192", cpu)
+    write(tmp_path, "native.none.gpu.L8192", [dict(r) for r in cpu])
+    from experiments import report2 as R
+    summ = S.build_summary(tmp_path, n_boot=50)
+    assert summ["parity"]["passed"] is None and len(summ["parity"]["rows"]) == 1
+    text = " ".join(x["text"] for x in R.section_parity(summ, "gpu")["statements"])
+    assert "UNVERIFIED" in text and "parity is undetermined" in text and "NOT COUNTED" in text
+    assert "above the near-tie margin" not in text and "stands in for CPU quality" not in text

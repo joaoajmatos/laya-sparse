@@ -355,6 +355,9 @@ def section_parity(summ: Optional[Dict[str, Any]], qdev: str) -> Dict[str, Any]:
         verdict = ("GPU-scored quality stands in for CPU quality on this parity subset: every CPU/GPU disagreement is a near-tie flip "
                    "(CPU top-two margin at most %s, a researcher-chosen margin set from these same flips, on a small sample). "
                    "Strict 98%% / 0.5-point rule: %s." % (margin, "passed" if par.get("strict_passed") else "missed"))
+    elif par["passed"] is None:
+        verdict = ("GPU-scored quality is UNVERIFIED: parity is undetermined, because no compared condition has at least %s shared items, "
+                   "so its numbers are labeled GPU and are not called CPU-equivalent." % crit.get("min_items"))
     else:
         verdict = ("GPU-scored quality is UNVERIFIED: at least one compared condition has a CPU/GPU disagreement above the near-tie margin, "
                    "so its numbers are labeled GPU and are not called CPU-equivalent.")

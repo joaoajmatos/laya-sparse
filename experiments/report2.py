@@ -341,11 +341,12 @@ def section_parity(summ: Optional[Dict[str, Any]], qdev: str) -> Dict[str, Any]:
     for r in rows:
         out["statements"].append(stmt(
             "measured", "%s: on %d items CPU and GPU give the same predicted answer for %s, accuracy %s on CPU and %s on GPU (difference %s), largest probability difference %.4f; "
-                        "%d disagreement(s), %d tolerated near-tie flip(s) (CPU top-two margin at most %s), %d above it; parity %s (strict 98%% / 0.5-point rule: %s)."
+                        "%d disagreement(s), %d tolerated near-tie flip(s) (CPU top-two margin at most %s), %d above it; parity %s (strict 98%% / 0.5-point rule: %s)%s."
             % (r["condition_id"], r["n_items"], pct(r["same_prediction_share"]), pct(r["accuracy_cpu"]), pct(r["accuracy_gpu"]),
                pts(r["accuracy_difference"]), r["max_abs_probability_difference"], r.get("n_disagreements", 0),
                len(r.get("tolerated_flips", [])), margin, len(r.get("failing_flips", [])),
-               "passed" if r["passed"] else "FAILED", "passed" if r.get("strict_passed") else "missed"), "summary.json"))
+               "passed" if r["passed"] else "FAILED", "passed" if r.get("strict_passed") else "missed",
+               "" if r.get("counted", True) else "; NOT COUNTED: fewer than %s items" % crit.get("min_items")), "summary.json"))
         for f in r.get("tolerated_flips", []):
             out["statements"].append(stmt(
                 "measured", "%s: near-tie flip on %s, CPU margin %.4f (CPU answered %s, GPU %s)."

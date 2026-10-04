@@ -346,3 +346,33 @@ def test_single_entry_and_empty_probabilities_go_through_parity(tmp_path):
     r2 = S.parity(empty)["rows"][0]
     assert r2["max_abs_probability_difference"] == 0.0 and r2["failing_flips"][0]["cpu_margin"] == 1.0
     assert S.top_two_margin({}) == 1.0
+
+
+def test_a_tiny_cell_is_listed_but_not_counted_in_the_overall_verdict(tmp_path):
+    """Two items scored through the CPU fallback must not decide parity (the fp32 8,192-token cell of p2-parity-fp32)."""
+    _near_tie_pair(tmp_path, n=100, tie_flips=0, cid="native.none.%s.L2048")
+    cpu = [rec("t%d" % i, "tc%d" % i, "dev", True) for i in range(2)]
+    gpu = [dict(r, predicted="b", correct=False) for r in cpu]              # 100% wrong flips, but only 2 items
+    write(tmp_path, "native.none.cpu.L8192", cpu)
+    write(tmp_path, "native.none.gpu.L8192", gpu)
+    par = S.parity(tmp_path)
+    by = {r["condition_id"]: r for r in par["rows"]}
+    assert by["native.none.cpu.L8192"]["counted"] is False and by["native.none.cpu.L8192"]["passed"] is False
+    assert by["native.none.cpu.L2048"]["counted"] is True
+    assert par["passed"] is True and par["strict_passed"] is True                    # decided by the counted row only
+    assert par["criteria"]["min_items"] == S.PARITY_MIN_ITEMS == 20
+    only_tiny = tmp_path / "tiny_only"
+    write(only_tiny, "native.none.cpu.L8192", cpu)
+    write(only_tiny, "native.none.gpu.L8192", gpu)
+    assert S.parity(only_tiny)["passed"] is None                                     # nothing countable: undetermined
+    assert S.parity(only_tiny, min_items=1)["passed"] is False
+
+
+def test_the_report_says_when_a_row_is_not_counted(tmp_path):
+    _near_tie_pair(tmp_path, n=100, tie_flips=0, cid="native.none.%s.L2048")
+    cpu = [rec("t%d" % i, "tc%d" % i, "dev", True) for i in range(2)]
+    write(tmp_path, "native.none.cpu.L8192", cpu)
+    write(tmp_path, "native.none.gpu.L8192", [dict(r) for r in cpu])
+    from experiments import report2 as R
+    text = " ".join(x["text"] for x in R.section_parity(S.build_summary(tmp_path, n_boot=50), "gpu")["statements"])
+    assert "NOT COUNTED: fewer than 20 items" in text

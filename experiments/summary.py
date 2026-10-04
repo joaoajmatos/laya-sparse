@@ -110,8 +110,11 @@ PARITY_MIN_SAME_PREDICTION = 0.98
 PARITY_MAX_ACCURACY_DIFF = 0.005
 #: A CPU/GPU label disagreement is tolerated as a near-tie flip when the CPU top-two probability margin on that item
 #: is at most this (specs/002-decision-benchmark-baselines/parity-margin.md). The value is circular: chosen from the very flips it
-#: judges, on 20 cases, with no held-out data. Basis: the bf16 flips of run p2-dev sat at CPU margins 0.0092 and 0.0010.
+#: judges, on 20 cases (5 distinct flipped items), with no held-out data. Basis: the 5 distinct bf16 flips of run p2-dev sat at CPU margins 0.0002, 0.0010, 0.0018, 0.0025 and 0.0092.
 PARITY_NEAR_TIE_MARGIN = 0.01
+#: A cell with fewer items than this is listed but not counted in the overall verdict (the fp32 8,192-token cell of
+#: run p2-parity-fp32 has 2 items, scored through the CPU out-of-memory fallback).
+PARITY_MIN_ITEMS = 20
 
 
 def top_two_margin(probabilities: Dict[str, Any]) -> float:
@@ -122,7 +125,7 @@ def top_two_margin(probabilities: Dict[str, Any]) -> float:
 
 def parity(run_path: Path, split: str = "dev", margin: float = PARITY_NEAR_TIE_MARGIN,
            gpu_run_path: Optional[Path] = None, cpu_label: Optional[str] = None,
-           gpu_label: Optional[str] = None) -> Dict[str, Any]:
+           gpu_label: Optional[str] = None, min_items: int = PARITY_MIN_ITEMS) -> Dict[str, Any]:
     """CPU against GPU on the items both scored (FR-024): the check that lets GPU-scored quality stand in for CPU.
 
     For every condition scored on both devices it reports the share of identical predicted answers, the accuracy on
@@ -137,6 +140,9 @@ def parity(run_path: Path, split: str = "dev", margin: float = PARITY_NEAR_TIE_M
       disagreement the accuracy difference is exactly 0, and otherwise it is fully accounted for by the listed flips
       (``accuracy_difference_from_flips`` equals ``accuracy_difference``). A cell whose accuracy moved by more than
       0.5 points because of tolerated flips passes ``passed`` and misses ``strict_passed``, by design.
+
+    A row with fewer than `min_items` shared items is still listed, with ``counted: false``, but is left out of the overall
+    ``passed`` / ``strict_passed`` (a handful of items says nothing about parity).
 
     `gpu_run_path` reads the GPU predictions from another run directory (for example a rerun at another autocast
     dtype); `cpu_label` and `gpu_label` are free-text hardware and dtype labels carried into the result.
@@ -178,15 +184,17 @@ def parity(run_path: Path, split: str = "dev", margin: float = PARITY_NEAR_TIE_M
         rows.append({"condition_id": cid, "gpu_condition_id": twin, "n_items": len(shared),
                      "same_prediction_share": same / len(shared), "accuracy_cpu": acc_c, "accuracy_gpu": acc_g,
                      "accuracy_difference": acc_g - acc_c, "accuracy_difference_from_flips": from_flips,
-                     "max_abs_probability_difference": pdiff, "strict_passed": bool(strict), "n_disagreements": len(flips),
+                     "max_abs_probability_difference": pdiff, "counted": len(shared) >= min_items,
+                     "strict_passed": bool(strict), "n_disagreements": len(flips),
                      "tolerated_flips": tolerated, "failing_flips": failing, "passed": not failing})
+    counted = [r for r in rows if r["counted"]]
     return {"criteria": {"min_same_prediction_share": PARITY_MIN_SAME_PREDICTION,
-                         "max_accuracy_difference": PARITY_MAX_ACCURACY_DIFF, "near_tie_margin": margin,
+                         "max_accuracy_difference": PARITY_MAX_ACCURACY_DIFF, "near_tie_margin": margin, "min_items": min_items,
                          "rule": "pass = no CPU/GPU disagreement with a CPU top-two margin above near_tie_margin; "
                                  "strict_passed keeps the original 98% / 0.5-point rule"},
             "labels": {"cpu": cpu_label, "gpu": gpu_label},
-            "rows": rows, "passed": (all(r["passed"] for r in rows) if rows else None),
-            "strict_passed": (all(r["strict_passed"] for r in rows) if rows else None)}
+            "rows": rows, "passed": (all(r["passed"] for r in counted) if counted else None),
+            "strict_passed": (all(r["strict_passed"] for r in counted) if counted else None)}
 
 
 def _cell_status(counts: Dict[str, int]) -> str:

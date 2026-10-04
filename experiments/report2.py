@@ -337,14 +337,30 @@ def section_parity(summ: Optional[Dict[str, Any]], qdev: str) -> Dict[str, Any]:
         out["statements"].append(stmt("measured", "Quality was scored on the GPU but no CPU parity subset exists yet, so GPU-scored quality is unverified (FR-024).", "summary.json"))
         return out
     crit = par["criteria"]
+    margin = crit.get("near_tie_margin")
     for r in rows:
         out["statements"].append(stmt(
-            "measured", "%s: on %d items CPU and GPU give the same predicted answer for %s, accuracy %s on CPU and %s on GPU (difference %s), largest probability difference %.4f; parity %s."
+            "measured", "%s: on %d items CPU and GPU give the same predicted answer for %s, accuracy %s on CPU and %s on GPU (difference %s), largest probability difference %.4f; "
+                        "%d disagreement(s), %d tolerated near-tie flip(s) (CPU top-two margin at most %s), %d above it; parity %s (strict 98%% / 0.5-point rule: %s)%s."
             % (r["condition_id"], r["n_items"], pct(r["same_prediction_share"]), pct(r["accuracy_cpu"]), pct(r["accuracy_gpu"]),
-               pts(r["accuracy_difference"]), r["max_abs_probability_difference"], "passed" if r["passed"] else "FAILED"), "summary.json"))
-    verdict = ("GPU-scored quality stands in for CPU quality (at least %s identical predictions and an accuracy difference of at most %s)."
-               % (pct(crit["min_same_prediction_share"]), pts(crit["max_accuracy_difference"]))) if par["passed"] else \
-              "GPU-scored quality is UNVERIFIED: at least one compared condition missed the parity criteria, so its numbers are labeled GPU and are not called CPU-equivalent."
+               pts(r["accuracy_difference"]), r["max_abs_probability_difference"], r.get("n_disagreements", 0),
+               len(r.get("tolerated_flips", [])), margin, len(r.get("failing_flips", [])),
+               "passed" if r["passed"] else "FAILED", "passed" if r.get("strict_passed") else "missed",
+               "" if r.get("counted", True) else "; NOT COUNTED: fewer than %s items" % crit.get("min_items")), "summary.json"))
+        for f in r.get("tolerated_flips", []):
+            out["statements"].append(stmt(
+                "measured", "%s: near-tie flip on %s, CPU margin %.4f (CPU answered %s, GPU %s)."
+                % (r["condition_id"], f["item_id"], f["cpu_margin"], f["cpu_predicted"], f["gpu_predicted"]), "summary.json"))
+    if par["passed"]:
+        verdict = ("GPU-scored quality stands in for CPU quality on this parity subset: every CPU/GPU disagreement is a near-tie flip "
+                   "(CPU top-two margin at most %s, a researcher-chosen margin set from these same flips, on a small sample). "
+                   "Strict 98%% / 0.5-point rule: %s." % (margin, "passed" if par.get("strict_passed") else "missed"))
+    elif par["passed"] is None:
+        verdict = ("GPU-scored quality is UNVERIFIED: parity is undetermined, because no compared condition has at least %s shared items, "
+                   "so its numbers are labeled GPU and are not called CPU-equivalent." % crit.get("min_items"))
+    else:
+        verdict = ("GPU-scored quality is UNVERIFIED: at least one compared condition has a CPU/GPU disagreement above the near-tie margin, "
+                   "so its numbers are labeled GPU and are not called CPU-equivalent.")
     out["statements"].append(stmt("measured", verdict, "summary.json"))
     return out
 

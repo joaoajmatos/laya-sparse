@@ -1112,16 +1112,32 @@ def _cmd_latency(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _margin_float(text: str) -> float:
+    """A probability margin: finite and not negative (a negative margin would make every disagreement a failure)."""
+    import math
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a number, got %r" % text)
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("must be a finite number >= 0, got %r" % text)
+    return value
+
+
 def _summary_args(p: argparse.ArgumentParser) -> None:
     _phase2_defaults(p)
     p.add_argument("--n-boot", type=int, default=5000, help="bootstrap resamples (default 5000)")
+    p.add_argument("--parity-margin", type=_margin_float, default=None,
+                   help="CPU/GPU parity: a label disagreement is a near-tie flip, not a failure, when the CPU top-two "
+                        "probability margin is at most this (default: summary.PARITY_NEAR_TIE_MARGIN, 0.01)")
 
 
 @command("eval-summary", "Summaries, paired comparisons and the cell table of the dev results (summary.json).",
          _summary_args)
 def _cmd_eval_summary(args: argparse.Namespace) -> int:
     from . import summary
-    body = summary.build_summary(args.run_path, split="dev", n_boot=args.n_boot, seed=args.seed)
+    margin = summary.PARITY_NEAR_TIE_MARGIN if args.parity_margin is None else args.parity_margin
+    body = summary.build_summary(args.run_path, split="dev", n_boot=args.n_boot, seed=args.seed, parity_margin=margin)
     for c in body["cells"]:
         acc = "-" if c["accuracy"] is None else "%.3f" % c["accuracy"]
         print("%-46s %-11s n=%d/%d acc=%s" % (c["condition_id"], c["status"], c["n_measured"], c["n_items"], acc))

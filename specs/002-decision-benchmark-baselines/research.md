@@ -369,7 +369,9 @@ predicted answers was 98.0% to 100% in every row, and the largest probability di
 points): native at 512 (-1.1) and 8,192 (-2.0), retrieve1024 at 512 (-1.1) and 8,192 (-1.0), and truncCap at 512 (-1.1). With 95 to 100 items one
 item is 1 point, so the 0.5-point criterion cannot be met by any single flipped item; the criterion is finer than the sample. The rule was written
 before the run and was not changed. GPU-scored quality therefore stays labeled unverified, as R20 says. A future spec could choose a larger parity
-sample or a criterion that fits it.
+sample or a criterion that fits it. **Update 2026-10-03:** a margin-aware criterion was then added next to the strict one (parity-margin.md); on these
+same predictions it passes, every one of the 5 distinct disagreements being a tolerated near-tie flip (CPU margins 0.0002 to 0.0092). The strict
+result above is unchanged and stays as recorded.
 
 **Quality (GPU-scored, unverified against CPU).** Native accuracy: 60.1% at 512 tokens, 51.3% at 1,024, 49.0% at 2,048, 46.8% at 4,096, 44.5% at
 8,192. The oracle control (the record under review with its question, framed like the items) scores 74.0% to 74.7% at every length, and the fine-tuned

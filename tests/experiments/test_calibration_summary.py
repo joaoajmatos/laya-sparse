@@ -168,7 +168,10 @@ def test_parity_passes_when_predictions_agree_and_accuracy_matches(tmp_path):
     assert par["passed"] is True and r["n_items"] == 100 and r["same_prediction_share"] == 1.0
     assert r["accuracy_difference"] == 0.0 and r["max_abs_probability_difference"] == pytest.approx(0.0005, abs=1e-6)
     assert r["condition_id"] == "native.none.cpu.L512" and r["gpu_condition_id"] == "native.none.gpu.L512"
-    assert par["criteria"] == {"min_same_prediction_share": 0.98, "max_accuracy_difference": 0.005}
+    keys = ("min_same_prediction_share", "max_accuracy_difference", "near_tie_margin")
+    assert {k: par["criteria"][k] for k in keys} == {"min_same_prediction_share": 0.98, "max_accuracy_difference": 0.005,
+                                                      "near_tie_margin": 0.01}
+    assert r["strict_passed"] is True and r["tolerated_flips"] == [] and r["failing_flips"] == []
 
 
 def test_parity_fails_when_too_many_answers_flip(tmp_path):
@@ -192,8 +195,9 @@ def test_parity_fails_on_an_accuracy_gap_even_with_98_percent_identical_predicti
 
 def test_parity_is_undetermined_without_a_cpu_twin_or_items(tmp_path):
     write(tmp_path, "native.none.gpu.L512", [rec("i%d" % i, "c%d" % i, "dev", True) for i in range(10)])
-    assert S.parity(tmp_path) == {"criteria": {"min_same_prediction_share": 0.98, "max_accuracy_difference": 0.005},
-                                  "rows": [], "passed": None}
+    par = S.parity(tmp_path)
+    assert par["rows"] == [] and par["passed"] is None and par["strict_passed"] is None
+    assert par["criteria"]["near_tie_margin"] == S.PARITY_NEAR_TIE_MARGIN == 0.01
 
 
 def test_summary_carries_the_parity_block_and_both_devices_as_separate_cells(tmp_path):
@@ -202,3 +206,186 @@ def test_summary_carries_the_parity_block_and_both_devices_as_separate_cells(tmp
     devices = {c["condition_id"]: c["device"] for c in summ["cells"]}
     assert devices == {"native.none.cpu.L512": "cpu", "native.none.gpu.L512": "gpu"}
     assert summ["parity"]["passed"] is True
+
+
+# --------------------------------------------------------------------------- margin-aware parity (parity-margin.md)
+
+def _near_tie_pair(run, n=100, tie_flips=2, hard_flips=0, margin_probs=(0.504, 0.496), cid="native.none.%s.L8192"):
+    """CPU items of which `tie_flips` are near-ties that the GPU answers differently, `hard_flips` are confident ones."""
+    cpu = [rec("i%d" % i, "c%d" % (i // 5), "dev", True, p=0.9) for i in range(n)]
+    for r in cpu[:tie_flips]:
+        r["probabilities"] = {"a": margin_probs[0], "b": margin_probs[1]}
+    gpu = [dict(r) for r in cpu]
+    for r in gpu[:tie_flips + hard_flips]:
+        r["predicted"], r["correct"] = "b", False
+    write(run, cid % "cpu", cpu)
+    write(run, cid % "gpu", gpu)
+    return cpu, gpu
+
+
+def test_near_tie_flips_are_tolerated_and_listed_with_margins_while_strict_is_reported(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=2)                      # 2 flips: 98% identical, accuracy -2 points
+    par = S.parity(tmp_path)
+    r = par["rows"][0]
+    assert par["passed"] is True and r["passed"] is True and r["failing_flips"] == []
+    assert par["strict_passed"] is False and r["strict_passed"] is False          # the old rule still fails
+    assert r["n_disagreements"] == 2 and r["accuracy_difference"] == pytest.approx(-0.02)
+    assert [f["item_id"] for f in r["tolerated_flips"]] == ["i0", "i1"]
+    assert r["tolerated_flips"][0]["cpu_margin"] == pytest.approx(0.008)
+    assert r["tolerated_flips"][0]["cpu_predicted"] == "a" and r["tolerated_flips"][0]["gpu_predicted"] == "b"
+
+
+def test_a_flip_above_the_margin_still_fails_parity(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=2, hard_flips=1)        # the third flip is on a 0.8-margin item
+    par = S.parity(tmp_path)
+    r = par["rows"][0]
+    assert par["passed"] is False and r["passed"] is False
+    assert [f["item_id"] for f in r["failing_flips"]] == ["i2"] and r["failing_flips"][0]["cpu_margin"] == pytest.approx(0.8)
+    assert len(r["tolerated_flips"]) == 2
+
+
+def test_the_margin_is_a_parameter_and_the_bound_is_inclusive(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=1, margin_probs=(0.75, 0.25))
+    assert S.parity(tmp_path)["passed"] is False                                    # margin 0.5 > default 0.01
+    assert S.parity(tmp_path, margin=0.5)["passed"] is True                         # exactly at the bound: tolerated
+    assert S.parity(tmp_path, margin=0.49)["passed"] is False
+    assert S.parity(tmp_path, margin=0.5)["criteria"]["near_tie_margin"] == 0.5
+
+
+def test_margin_uses_the_cpu_probabilities_and_handles_one_option():
+    assert S.top_two_margin({"a": 0.5, "b": 0.3, "c": 0.2}) == pytest.approx(0.2)
+    assert S.top_two_margin({"only": 1.0}) == 1.0
+
+
+def test_gpu_predictions_can_come_from_another_run_with_labels(tmp_path):
+    cpu_run, other = tmp_path / "cpu_run", tmp_path / "fp16_run"
+    cpu, gpu = _near_tie_pair(cpu_run, tie_flips=1)
+    write(other, "native.none.gpu.L8192", [dict(r, predicted="a", correct=True) for r in gpu])      # the rerun agrees with CPU
+    par = S.parity(cpu_run, gpu_run_path=other, cpu_label="CPU i7-8700 fp32", gpu_label="RTX 4060 fp16 autocast")
+    r = par["rows"][0]
+    assert r["same_prediction_share"] == 1.0 and r["n_disagreements"] == 0 and par["passed"] is True and par["strict_passed"] is True
+    assert par["labels"] == {"cpu": "CPU i7-8700 fp32", "gpu": "RTX 4060 fp16 autocast"}
+    assert S.parity(cpu_run)["rows"][0]["n_disagreements"] == 1                      # the run's own GPU twin still disagrees
+
+
+def test_summary_and_report_carry_the_margin_aware_verdict(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=2)
+    summ = S.build_summary(tmp_path, n_boot=50)
+    assert summ["parity"]["passed"] is True and summ["parity"]["strict_passed"] is False
+    assert S.build_summary(tmp_path, n_boot=50, parity_margin=0.001)["parity"]["passed"] is False
+    from experiments import report2 as R
+    text = " ".join(x["text"] for x in R.section_parity(S.build_summary(tmp_path, n_boot=50), "gpu")["statements"])
+    assert "near-tie flip on i0" in text and "stands in for CPU quality" in text and "missed" in text
+
+
+def test_eval_summary_takes_a_parity_margin_option():
+    from experiments import cli
+    cli._load_commands()
+    ns = cli.build_parser().parse_args(["eval-summary", "--parity-margin", "0.02"])
+    assert ns.parity_margin == 0.02
+    assert cli.build_parser().parse_args(["eval-summary"]).parity_margin is None
+
+
+def test_the_accuracy_difference_is_fully_accounted_for_by_the_listed_flips(tmp_path):
+    """The accuracy rule is replaced by the margin rule: accuracy moves only through disagreeing items."""
+    _near_tie_pair(tmp_path, tie_flips=3, hard_flips=1)
+    r = S.parity(tmp_path)["rows"][0]
+    assert r["accuracy_difference"] == pytest.approx(-0.04) == pytest.approx(r["accuracy_difference_from_flips"])
+    run2 = tmp_path / "agree"
+    _near_tie_pair(run2, tie_flips=0)
+    r2 = S.parity(run2)["rows"][0]
+    assert r2["n_disagreements"] == 0 and r2["accuracy_difference"] == 0.0 and r2["accuracy_difference_from_flips"] == 0.0
+
+
+def test_tolerated_flips_can_move_accuracy_past_the_old_limit_by_design(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=2)                       # 2 near-tie flips: -2 points
+    par = S.parity(tmp_path)
+    r = par["rows"][0]
+    assert r["accuracy_difference"] == pytest.approx(-0.02) and r["passed"] is True and r["strict_passed"] is False
+
+
+def test_a_negative_or_non_finite_margin_is_refused(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=1)
+    for bad in (-0.01, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite number >= 0"):
+            S.parity(tmp_path, margin=bad)
+    assert S.parity(tmp_path, margin=0.0)["rows"][0]["failing_flips"][0]["cpu_margin"] == pytest.approx(0.008)   # 0 is allowed: strict ties only
+
+
+def test_the_cli_refuses_a_negative_or_non_finite_parity_margin(capsys):
+    from experiments import cli
+    cli._load_commands()
+    for bad in ("-0.01", "nan", "inf", "abc"):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["eval-summary", "--parity-margin", bad])
+    assert cli.build_parser().parse_args(["eval-summary", "--parity-margin", "0"]).parity_margin == 0.0
+
+
+def test_margin_zero_tolerates_only_an_exact_tie_through_parity(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=1, margin_probs=(0.5, 0.5))                  # CPU margin exactly 0
+    assert S.parity(tmp_path, margin=0.0)["passed"] is True
+    assert S.parity(tmp_path, margin=0.0)["rows"][0]["tolerated_flips"][0]["cpu_margin"] == 0.0
+    _near_tie_pair(tmp_path / "other", tie_flips=1, margin_probs=(0.504, 0.496))     # a 0.008 margin is not a tie
+    assert S.parity(tmp_path / "other", margin=0.0)["passed"] is False
+
+
+def test_single_entry_and_empty_probabilities_go_through_parity(tmp_path):
+    cpu = [rec("i%d" % i, "c%d" % i, "dev", True) for i in range(4)]
+    for r in cpu:
+        r["probabilities"] = {"only": 1.0}
+    gpu = [dict(r) for r in cpu]
+    gpu[0]["predicted"], gpu[0]["correct"] = "b", False
+    write(tmp_path, "native.none.cpu.L512", cpu)
+    write(tmp_path, "native.none.gpu.L512", gpu)
+    r = S.parity(tmp_path)["rows"][0]
+    assert r["failing_flips"][0]["cpu_margin"] == 1.0 and r["passed"] is False      # one option: never a near-tie
+    empty = tmp_path / "empty"
+    cpu2 = [dict(r, probabilities={}) for r in cpu]
+    write(empty, "native.none.cpu.L512", cpu2)
+    write(empty, "native.none.gpu.L512", [dict(r, probabilities={}) for r in gpu])
+    r2 = S.parity(empty)["rows"][0]
+    assert r2["max_abs_probability_difference"] == 0.0 and r2["failing_flips"][0]["cpu_margin"] == 1.0
+    assert S.top_two_margin({}) == 1.0
+
+
+def test_a_tiny_cell_is_listed_but_not_counted_in_the_overall_verdict(tmp_path):
+    """Two items scored through the CPU fallback must not decide parity (the fp32 8,192-token cell of p2-parity-fp32)."""
+    _near_tie_pair(tmp_path, n=100, tie_flips=0, cid="native.none.%s.L2048")
+    cpu = [rec("t%d" % i, "tc%d" % i, "dev", True) for i in range(2)]
+    gpu = [dict(r, predicted="b", correct=False) for r in cpu]              # 100% wrong flips, but only 2 items
+    write(tmp_path, "native.none.cpu.L8192", cpu)
+    write(tmp_path, "native.none.gpu.L8192", gpu)
+    par = S.parity(tmp_path)
+    by = {r["condition_id"]: r for r in par["rows"]}
+    assert by["native.none.cpu.L8192"]["counted"] is False and by["native.none.cpu.L8192"]["passed"] is False
+    assert by["native.none.cpu.L2048"]["counted"] is True
+    assert par["passed"] is True and par["strict_passed"] is True                    # decided by the counted row only
+    assert par["criteria"]["min_items"] == S.PARITY_MIN_ITEMS == 20
+    only_tiny = tmp_path / "tiny_only"
+    write(only_tiny, "native.none.cpu.L8192", cpu)
+    write(only_tiny, "native.none.gpu.L8192", gpu)
+    assert S.parity(only_tiny)["passed"] is None                                     # nothing countable: undetermined
+    assert S.parity(only_tiny, min_items=1)["passed"] is False
+
+
+def test_the_report_says_when_a_row_is_not_counted(tmp_path):
+    _near_tie_pair(tmp_path, n=100, tie_flips=0, cid="native.none.%s.L2048")
+    cpu = [rec("t%d" % i, "tc%d" % i, "dev", True) for i in range(2)]
+    write(tmp_path, "native.none.cpu.L8192", cpu)
+    write(tmp_path, "native.none.gpu.L8192", [dict(r) for r in cpu])
+    from experiments import report2 as R
+    text = " ".join(x["text"] for x in R.section_parity(S.build_summary(tmp_path, n_boot=50), "gpu")["statements"])
+    assert "NOT COUNTED: fewer than 20 items" in text
+
+
+def test_the_report_calls_an_undetermined_parity_undetermined_not_failed(tmp_path):
+    """Every row below the minimum item count: no verdict, and the text must not claim a disagreement above the margin."""
+    cpu = [rec("t%d" % i, "tc%d" % i, "dev", True) for i in range(2)]
+    write(tmp_path, "native.none.cpu.L8192", cpu)
+    write(tmp_path, "native.none.gpu.L8192", [dict(r) for r in cpu])
+    from experiments import report2 as R
+    summ = S.build_summary(tmp_path, n_boot=50)
+    assert summ["parity"]["passed"] is None and len(summ["parity"]["rows"]) == 1
+    text = " ".join(x["text"] for x in R.section_parity(summ, "gpu")["statements"])
+    assert "UNVERIFIED" in text and "parity is undetermined" in text and "NOT COUNTED" in text
+    assert "above the near-tie margin" not in text and "stands in for CPU quality" not in text

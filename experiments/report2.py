@@ -350,8 +350,13 @@ def section_parity(summ: Optional[Dict[str, Any]], qdev: str) -> Dict[str, Any]:
             out["statements"].append(stmt(
                 "measured", "%s: near-tie flip on %s, CPU margin %.4f (CPU answered %s, GPU %s)."
                 % (r["condition_id"], f["item_id"], f["cpu_margin"], f["cpu_predicted"], f["gpu_predicted"]), "summary.json"))
-    verdict = ("GPU-scored quality stands in for CPU quality: every CPU/GPU disagreement is a near-tie flip (CPU top-two margin at most %s). "
-               "Strict 98%% / 0.5-point rule: %s." % (margin, "passed" if par.get("strict_passed") else "missed")) if par["passed"] else               "GPU-scored quality is UNVERIFIED: at least one compared condition has a CPU/GPU disagreement above the near-tie margin, so its numbers are labeled GPU and are not called CPU-equivalent."
+    if par["passed"]:
+        verdict = ("GPU-scored quality stands in for CPU quality on this parity subset: every CPU/GPU disagreement is a near-tie flip "
+                   "(CPU top-two margin at most %s, a researcher-chosen margin set from these same flips, on a small sample). "
+                   "Strict 98%% / 0.5-point rule: %s." % (margin, "passed" if par.get("strict_passed") else "missed"))
+    else:
+        verdict = ("GPU-scored quality is UNVERIFIED: at least one compared condition has a CPU/GPU disagreement above the near-tie margin, "
+                   "so its numbers are labeled GPU and are not called CPU-equivalent.")
     out["statements"].append(stmt("measured", verdict, "summary.json"))
     return out
 

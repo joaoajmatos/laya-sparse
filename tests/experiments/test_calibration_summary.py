@@ -284,3 +284,65 @@ def test_eval_summary_takes_a_parity_margin_option():
     ns = cli.build_parser().parse_args(["eval-summary", "--parity-margin", "0.02"])
     assert ns.parity_margin == 0.02
     assert cli.build_parser().parse_args(["eval-summary"]).parity_margin is None
+
+
+def test_the_accuracy_difference_is_fully_accounted_for_by_the_listed_flips(tmp_path):
+    """The accuracy rule is replaced by the margin rule: accuracy moves only through disagreeing items."""
+    _near_tie_pair(tmp_path, tie_flips=3, hard_flips=1)
+    r = S.parity(tmp_path)["rows"][0]
+    assert r["accuracy_difference"] == pytest.approx(-0.04) == pytest.approx(r["accuracy_difference_from_flips"])
+    run2 = tmp_path / "agree"
+    _near_tie_pair(run2, tie_flips=0)
+    r2 = S.parity(run2)["rows"][0]
+    assert r2["n_disagreements"] == 0 and r2["accuracy_difference"] == 0.0 and r2["accuracy_difference_from_flips"] == 0.0
+
+
+def test_tolerated_flips_can_move_accuracy_past_the_old_limit_by_design(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=2)                       # 2 near-tie flips: -2 points
+    par = S.parity(tmp_path)
+    r = par["rows"][0]
+    assert r["accuracy_difference"] == pytest.approx(-0.02) and r["passed"] is True and r["strict_passed"] is False
+
+
+def test_a_negative_or_non_finite_margin_is_refused(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=1)
+    for bad in (-0.01, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite number >= 0"):
+            S.parity(tmp_path, margin=bad)
+    assert S.parity(tmp_path, margin=0.0)["rows"][0]["failing_flips"][0]["cpu_margin"] == pytest.approx(0.008)   # 0 is allowed: strict ties only
+
+
+def test_the_cli_refuses_a_negative_or_non_finite_parity_margin(capsys):
+    from experiments import cli
+    cli._load_commands()
+    for bad in ("-0.01", "nan", "inf", "abc"):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["eval-summary", "--parity-margin", bad])
+    assert cli.build_parser().parse_args(["eval-summary", "--parity-margin", "0"]).parity_margin == 0.0
+
+
+def test_margin_zero_tolerates_only_an_exact_tie_through_parity(tmp_path):
+    _near_tie_pair(tmp_path, tie_flips=1, margin_probs=(0.5, 0.5))                  # CPU margin exactly 0
+    assert S.parity(tmp_path, margin=0.0)["passed"] is True
+    assert S.parity(tmp_path, margin=0.0)["rows"][0]["tolerated_flips"][0]["cpu_margin"] == 0.0
+    _near_tie_pair(tmp_path / "other", tie_flips=1, margin_probs=(0.504, 0.496))     # a 0.008 margin is not a tie
+    assert S.parity(tmp_path / "other", margin=0.0)["passed"] is False
+
+
+def test_single_entry_and_empty_probabilities_go_through_parity(tmp_path):
+    cpu = [rec("i%d" % i, "c%d" % i, "dev", True) for i in range(4)]
+    for r in cpu:
+        r["probabilities"] = {"only": 1.0}
+    gpu = [dict(r) for r in cpu]
+    gpu[0]["predicted"], gpu[0]["correct"] = "b", False
+    write(tmp_path, "native.none.cpu.L512", cpu)
+    write(tmp_path, "native.none.gpu.L512", gpu)
+    r = S.parity(tmp_path)["rows"][0]
+    assert r["failing_flips"][0]["cpu_margin"] == 1.0 and r["passed"] is False      # one option: never a near-tie
+    empty = tmp_path / "empty"
+    cpu2 = [dict(r, probabilities={}) for r in cpu]
+    write(empty, "native.none.cpu.L512", cpu2)
+    write(empty, "native.none.gpu.L512", [dict(r, probabilities={}) for r in gpu])
+    r2 = S.parity(empty)["rows"][0]
+    assert r2["max_abs_probability_difference"] == 0.0 and r2["failing_flips"][0]["cpu_margin"] == 1.0
+    assert S.top_two_margin({}) == 1.0

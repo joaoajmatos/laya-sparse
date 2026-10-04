@@ -109,12 +109,13 @@ def paired(records: Sequence[Dict[str, Any]], ref_records: Sequence[Dict[str, An
 PARITY_MIN_SAME_PREDICTION = 0.98
 PARITY_MAX_ACCURACY_DIFF = 0.005
 #: A CPU/GPU label disagreement is tolerated as a near-tie flip when the CPU top-two probability margin on that item
-#: is at most this (specs/002-decision-benchmark-baselines/parity-margin.md). Basis: the bf16 flips of run p2-dev sat at CPU margins 0.0092 and 0.0010.
+#: is at most this (specs/002-decision-benchmark-baselines/parity-margin.md). The value is circular: chosen from the very flips it
+#: judges, on 20 cases, with no held-out data. Basis: the bf16 flips of run p2-dev sat at CPU margins 0.0092 and 0.0010.
 PARITY_NEAR_TIE_MARGIN = 0.01
 
 
 def top_two_margin(probabilities: Dict[str, Any]) -> float:
-    """Top-1 minus top-2 probability; 1.0 when there is no second option (a one-option question cannot tie)."""
+    """Top-1 minus top-2 probability; 1.0 when there is no second option (a one-option or empty answer cannot tie)."""
     p = sorted((float(v) for v in probabilities.values()), reverse=True)
     return p[0] - p[1] if len(p) > 1 else 1.0
 
@@ -131,11 +132,17 @@ def parity(run_path: Path, split: str = "dev", margin: float = PARITY_NEAR_TIE_M
       (the original rule; kept for comparison).
     * ``passed`` (the criterion): no label disagreement whose CPU top-two margin exceeds `margin`. Disagreements at or
       below the margin are tolerated near-tie flips, listed with their margins in ``tolerated_flips``; the others are
-      listed in ``failing_flips``.
+      listed in ``failing_flips``. This explicitly replaces the 0.5-point accuracy rule: both devices score the same
+      items against the same gold, so accuracy can differ only through items whose predicted answer differs. With no
+      disagreement the accuracy difference is exactly 0, and otherwise it is fully accounted for by the listed flips
+      (``accuracy_difference_from_flips`` equals ``accuracy_difference``). A cell whose accuracy moved by more than
+      0.5 points because of tolerated flips passes ``passed`` and misses ``strict_passed``, by design.
 
     `gpu_run_path` reads the GPU predictions from another run directory (for example a rerun at another autocast
     dtype); `cpu_label` and `gpu_label` are free-text hardware and dtype labels carried into the result.
     """
+    if not (np.isfinite(margin) and margin >= 0):
+        raise ValueError("the parity margin must be a finite number >= 0, got %r" % (margin,))
     run_path = Path(run_path)
     gpu_root = Path(gpu_run_path) if gpu_run_path is not None else run_path
     ids = condition_ids(run_path)
@@ -164,13 +171,14 @@ def parity(run_path: Path, split: str = "dev", margin: float = PARITY_NEAR_TIE_M
         same = len(shared) - len(flips)
         acc_c = float(np.mean([bool(cpu[i]["correct"]) for i in shared]))
         acc_g = float(np.mean([bool(gpu[i]["correct"]) for i in shared]))
-        pdiff = max(abs(float(cpu[i]["probabilities"][k]) - float(gpu[i]["probabilities"].get(k, 0.0)))
-                    for i in shared for k in cpu[i]["probabilities"])
+        pdiff = max((abs(float(cpu[i]["probabilities"][k]) - float(gpu[i]["probabilities"].get(k, 0.0)))
+                     for i in shared for k in cpu[i]["probabilities"]), default=0.0)
+        from_flips = (sum(f["gpu_correct"] for f in flips) - sum(f["cpu_correct"] for f in flips)) / len(shared)
         strict = same / len(shared) >= PARITY_MIN_SAME_PREDICTION and abs(acc_g - acc_c) <= PARITY_MAX_ACCURACY_DIFF
         rows.append({"condition_id": cid, "gpu_condition_id": twin, "n_items": len(shared),
                      "same_prediction_share": same / len(shared), "accuracy_cpu": acc_c, "accuracy_gpu": acc_g,
-                     "accuracy_difference": acc_g - acc_c, "max_abs_probability_difference": pdiff,
-                     "strict_passed": bool(strict), "n_disagreements": len(flips),
+                     "accuracy_difference": acc_g - acc_c, "accuracy_difference_from_flips": from_flips,
+                     "max_abs_probability_difference": pdiff, "strict_passed": bool(strict), "n_disagreements": len(flips),
                      "tolerated_flips": tolerated, "failing_flips": failing, "passed": not failing})
     return {"criteria": {"min_same_prediction_share": PARITY_MIN_SAME_PREDICTION,
                          "max_accuracy_difference": PARITY_MAX_ACCURACY_DIFF, "near_tie_margin": margin,

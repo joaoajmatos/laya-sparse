@@ -1112,10 +1112,22 @@ def _cmd_latency(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _margin_float(text: str) -> float:
+    """A probability margin: finite and not negative (a negative margin would make every disagreement a failure)."""
+    import math
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a number, got %r" % text)
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("must be a finite number >= 0, got %r" % text)
+    return value
+
+
 def _summary_args(p: argparse.ArgumentParser) -> None:
     _phase2_defaults(p)
     p.add_argument("--n-boot", type=int, default=5000, help="bootstrap resamples (default 5000)")
-    p.add_argument("--parity-margin", type=float, default=None,
+    p.add_argument("--parity-margin", type=_margin_float, default=None,
                    help="CPU/GPU parity: a label disagreement is a near-tie flip, not a failure, when the CPU top-two "
                         "probability margin is at most this (default: summary.PARITY_NEAR_TIE_MARGIN, 0.01)")
 

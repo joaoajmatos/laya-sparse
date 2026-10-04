@@ -10,7 +10,7 @@ A CPU/GPU label disagreement counts as a parity **failure** only if the CPU top-
 (`experiments/summary.py:PARITY_NEAR_TIE_MARGIN`; override with `eval-summary --parity-margin`). Disagreements at a margin of 0.01 or less are
 reported as **tolerated near-tie flips**, listed with their margins (`tolerated_flips`); the others are in `failing_flips`. Parity passes when no
 disagreement is above the margin. Basis: the bf16 flips sat at CPU margins 0.0092 and 0.0010 (worst margin seen is 0.0092), bf16 versus CPU
-probability differences were 0.0057 to 0.0078 and fp16 versus CPU 0.0010. The margin is a researcher's choice; it was not tuned on a held-out set.
+probability differences were 0.0036 to 0.0078 across the 9 cells and fp16 versus CPU 0.0010. The margin is a researcher's choice and it is circular: it was set from the very flips it now judges (worst margin 0.0092, so any margin of 0.01 or more tolerates all of them), with no held-out data. The 9 bf16 cells below reuse the same 20 cases and 100 items, so they are not 9 independent confirmations: they contain 4 distinct flipped items in total. A pass on this run therefore says "every disagreement seen here is a near-tie at margin 0.01", not that 0.01 is a validated threshold.
 
 ## Result on the existing predictions (no new model run)
 

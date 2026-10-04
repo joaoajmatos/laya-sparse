@@ -101,7 +101,8 @@ def test_exports_are_byte_identical(exports):
 
 def test_vendorable_set_is_small(exports):
     root, _ = exports
-    vend = [p for p in common.iter_files(root) if "h128" not in p.name and "fastpath_off" not in str(p)]
+    vend = [p for p in common.iter_files(root)
+            if "h128" not in str(p.relative_to(root)) and "fastpath_off" not in str(p.relative_to(root))]
     assert sum(p.stat().st_size for p in vend) < 5 * 1024 * 1024
 
 

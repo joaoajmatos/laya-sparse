@@ -6,6 +6,7 @@ layers, `scorer`, `act_head`) exactly as `laya/common.py` does; the final output
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,11 @@ CASES = {
     "fastpath_off": dict(hidden=128, question=Q_CHOICE, state=(STATE_SHORT + " ") * 6, max_len=128,
                          head_max_len=64, pad_to=None, fastpath_off=True),
 }
+
+
+def config_dir_name(hidden: int) -> str:
+    """Checkpoint-shaped directory beside the weights: encoder/config.json and rl_agent_config.json."""
+    return "fixture-h%d" % hidden
 
 
 def _tensor_of(x):
@@ -149,9 +155,15 @@ def export_case(name: str, spec: Dict[str, Any], out: Path, weights_written: set
         if wname not in weights_written:
             common.save_tensors(out / wname, dict(model.state_dict()))
             weights_written.add(wname)
+            # The checkpoint's own config files, byte for byte: what laya.Agent loaded these weights with (laya:006).
+            cfg_dir = out / config_dir_name(spec["hidden"])
+            (cfg_dir / "encoder").mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(fx.path) / "encoder" / "config.json", cfg_dir / "encoder" / "config.json")
+            shutil.copyfile(Path(fx.path) / "rl_agent_config.json", cfg_dir / "rl_agent_config.json")
         ecfg = model.encoder.config
         meta = common.base_meta(
-            "forward-golden", case=name, weights_file="../" + wname, fixture_hidden=spec["hidden"],
+            "forward-golden", case=name, weights_file="../" + wname, config_dir="../" + config_dir_name(spec["hidden"]),
+            fixture_hidden=spec["hidden"],
             fixture_checkpoint_seed=1234, agent_config=agent.cfg, encoder_config=common.encoder_config(model),
             layer_types=list(getattr(ecfg, "layer_types", []) or []),
             input={"question": spec["question"], "state": spec["state"], "max_len": spec["max_len"],

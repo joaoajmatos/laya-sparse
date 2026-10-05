@@ -101,7 +101,8 @@ def test_exports_are_byte_identical(exports):
 
 def test_vendorable_set_is_small(exports):
     root, _ = exports
-    vend = [p for p in common.iter_files(root) if "h128" not in p.name and "fastpath_off" not in str(p)]
+    vend = [p for p in common.iter_files(root)
+            if "h128" not in str(p.relative_to(root)) and "fastpath_off" not in str(p.relative_to(root))]
     assert sum(p.stat().st_size for p in vend) < 5 * 1024 * 1024
 
 
@@ -140,3 +141,34 @@ def test_cli_golden_command(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["golden", "weights-inventory", "--out", str(tmp_path / "o")]) == 0
     assert (tmp_path / "o" / "inventory.json").is_file()
+
+
+# --------------------------------------------------------------------------- laya:006: config beside the weights
+
+def test_config_files_agree_with_the_weights_and_the_tokenizer_goldens(exports, tmp_path):
+    root, _ = exports
+    from experiments.golden import tokenizer
+    tokenizer.export_tokenizer(tmp_path)
+    tok_meta = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
+    for hidden in (64, 128):
+        cfg = json.loads((root / forward.config_dir_name(hidden) / "encoder" / "config.json").read_text(encoding="utf-8"))
+        w = load_file(str(root / ("weights-h%d.safetensors" % hidden)))
+        emb = next(v for k, v in w.items() if k.endswith("embeddings.tok_embeddings.weight"))
+        assert cfg["vocab_size"] == emb.shape[0] and cfg["hidden_size"] == emb.shape[1] == hidden
+        assert cfg["vocab_size"] == tok_meta["vocab_size"]                       # config, weights and tokenizer agree
+        assert cfg["num_hidden_layers"] == 3 and cfg["num_attention_heads"] == 2
+        layers = {k.split(".")[2] for k in w if k.startswith("encoder.layers.")}
+        assert len(layers) == cfg["num_hidden_layers"]
+        assert w["encoder.layers.0.mlp.Wi.weight"].shape[0] == 2 * cfg["intermediate_size"]  # gated MLP: 2 x intermediate
+        assert cfg["intermediate_size"] == 2 * hidden
+
+
+def test_agent_config_beside_the_weights_matches_the_case_meta(exports):
+    root, _ = exports
+    for case, hidden in (("short", 64), ("fastpath_off", 128)):
+        meta = json.loads((root / case / "meta.json").read_text(encoding="utf-8"))
+        assert meta["config_dir"] == "../" + forward.config_dir_name(hidden)
+        agent_cfg = json.loads((root / forward.config_dir_name(hidden) / "rl_agent_config.json").read_text(encoding="utf-8"))
+        assert agent_cfg == meta["agent_config"] and agent_cfg["laya_sparse_fixture"] is True
+        assert (root / meta["config_dir"][3:] / "encoder" / "config.json").is_file()
+

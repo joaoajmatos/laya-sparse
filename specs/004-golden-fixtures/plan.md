@@ -23,3 +23,4 @@
   Vendorable (< 5 MB): `inventory.json`, `weights-h64`, `short`, `medium`, `padded`. Optional: `fastpath_off` + `weights-h128` (3.6 MB more). Kernel goldens are
   inherently large (about 5 MB at L=256, 130 MB total) and stay git-ignored.
 - `meta.json` drops `_name_or_path` (a temp path) from the encoder config to stay byte-identical.
+- `laya:006` adds `fixture-h<hidden>/{encoder/config.json,rl_agent_config.json}` beside each weights file (the 64-hidden one belongs to the vendorable core, the 128-hidden one to the optional `fastpath_off` set).

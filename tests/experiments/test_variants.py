@@ -92,3 +92,99 @@ def test_variants_are_cpu_only_and_unknown_ones_are_refused():
     assert "unknown" in V.unsupported_reason("fp16", "cpu")
     with pytest.raises(V.VariantError):
         V.apply_variant(object(), "fp16")
+
+
+# --------------------------------------------------------------------------- laya:007: exact local attention
+
+def _encode(agent, lengths, L=96, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    vocab = agent.model.encoder.config.vocab_size
+    ids = torch.randint(5, vocab, (len(lengths), L), generator=g)
+    att = (torch.arange(L)[None, :] < torch.tensor(lengths)[:, None]).long()
+    ids = ids * att
+    with torch.no_grad():
+        return agent.model.encoder(input_ids=ids, attention_mask=att).last_hidden_state, att
+
+
+def test_local_exact_replaces_exactly_the_audit_local_layers_and_restores(agent):
+    enc = agent.model.encoder
+    expected = [i for i, layer in enumerate(enc.layers) if layer.attn.sliding_window is not None]
+    assert expected, "the fixture must have a local layer"
+    rec = V.apply_variant(agent, "local_exact", reversible=True)
+    try:
+        assert rec["local_exact_layers"] == expected
+        assert rec["local_exact_half_width"] == enc.config.sliding_window == enc.config.local_attention // 2
+        for i, layer in enumerate(enc.layers):
+            assert ("forward" in layer.attn.__dict__) == (i in expected)      # global layers untouched
+    finally:
+        rec["restore"]()
+    assert not any("forward" in layer.attn.__dict__ for layer in enc.layers)
+
+
+def test_local_exact_encoder_output_matches_native_with_padding(agent):
+    lengths = [96, 80, 33]                               # window is 8: every row exceeds it
+    native, att = _encode(agent, lengths)
+    rec = V.apply_variant(agent, "local_exact", reversible=True)
+    try:
+        exact, _ = _encode(agent, lengths)
+    finally:
+        rec["restore"]()
+    valid = att.bool()
+    assert float((native - exact).abs()[valid].max()) < 1e-5
+    assert float((native - exact).abs().max()) < 1e-4    # padded rows too (they feed nothing)
+
+
+def test_local_exact_probabilities_match_native(agent):
+    native = probs(agent)
+    rec = V.apply_variant(agent, "local_exact", reversible=True)
+    try:
+        exact = probs(agent)
+    finally:
+        rec["restore"]()
+    for k in native:
+        assert abs(native[k] - exact[k]) < 1e-5
+
+
+def test_local_exact_is_not_a_noop(agent):
+    """The replaced forward really runs (a mask that is wider than the window would also change outputs)."""
+    calls = []
+    import experiments.kernels.local_exact as K
+    orig = K.local_exact_attention
+    K.local_exact_attention = lambda *a, **kw: (calls.append(1), orig(*a, **kw))[1]
+    rec = V.apply_variant(agent, "local_exact", reversible=True)
+    try:
+        probs(agent)
+    finally:
+        rec["restore"]()
+        K.local_exact_attention = orig
+    assert calls
+
+
+def test_local_exact_fastpath_off_is_optimized_native_and_cpu_only(agent):
+    before = torch.backends.mha.get_fastpath_enabled()
+    rec = V.apply_variant(agent, "local_exact_fastpath_off", reversible=True)
+    try:
+        assert rec["fastpath_after"] is False and rec["local_exact_layers"]
+    finally:
+        rec["restore"]()
+    assert torch.backends.mha.get_fastpath_enabled() == before
+    assert not any("forward" in layer.attn.__dict__ for layer in agent.model.encoder.layers)
+    for v in V.LOCAL_EXACT_VARIANTS:
+        assert "CPU-only" in V.unsupported_reason(v, "gpu") and V.unsupported_reason(v, "cpu") is None
+
+
+def test_local_exact_refuses_an_encoder_without_local_layers(agent):
+    for layer in agent.model.encoder.layers:
+        layer.attn.sliding_window = None
+        layer.attention_type = "full_attention"
+    with pytest.raises(V.VariantError, match="no local"):
+        V.apply_variant(agent, "local_exact")
+
+
+def test_key_validity_from_the_4d_mask_diagonal_equals_the_padding_mask():
+    L = 20
+    att = torch.tensor([[1] * 20, [1] * 13 + [0] * 7])
+    pos = torch.arange(L)
+    mask = ((pos[:, None] - pos[None, :]).abs() <= 4)[None, None] & att.bool()[:, None, None, :]
+    assert torch.equal(V._key_valid(mask, 2, L), att.bool())
+    assert V._key_valid(None, 2, L) is None

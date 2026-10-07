@@ -132,3 +132,66 @@ def test_gpu_reference_refuses_without_cuda(tiny_checkpoint, tmp_path, monkeypat
     monkeypatch.setattr(results, "RESULTS_ROOT", tmp_path)
     assert cli.main(["gpu-reference", "--run-id", "g", "--model", tiny_checkpoint, "--threads", "1"]) == cli.EXIT_TOOL_ERROR
     assert not (tmp_path / "g" / "gpu_reference.json").exists()
+
+
+# --------------------------------------------------------------------------- laya:007: exact +/-w band kernel
+
+from experiments.kernels.dense import dense_masked_attention
+from experiments.kernels.local import local_attention
+from experiments.kernels.local_exact import local_exact_attention
+
+
+def _qkv(B, L, H=2, D=8, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return tuple(torch.randn(B, H, L, D, generator=g) for _ in range(3))
+
+
+@pytest.mark.parametrize("L", [1, 7, 64, 65, 128, 129, 200, 257])
+@pytest.mark.parametrize("w", [1, 8, 64])
+def test_local_exact_matches_reference_and_dense_masked(L, w):
+    q, k, v = _qkv(3, L)
+    lengths = [L, max(1, L - 5), max(1, L // 2)]
+    spec = MaskSpec(lengths, "band", half_width=w)
+    out = local_exact_attention(q, k, v, w, torch.tensor(lengths))
+    ref = reference_attention(q, k, v, spec)
+    assert torch.isfinite(out).all()
+    assert float((out - ref).abs().max()) < 1e-5
+    assert float((out - dense_masked_attention(q, k, v, spec)).abs().max()) < 1e-5
+
+
+def test_local_exact_boundary_distance_w_in_w_plus_one_out():
+    w, L = 4, 40
+    q, k, v = _qkv(1, L)
+    k2, v2 = k.clone(), v.clone()
+    for i in (w, 31, 32, 33):                     # queries around block edges (block = w)
+        for j, expect_change in ((i + w, True), (i + w + 1, False)):
+            if j >= L:
+                continue
+            k2, v2 = k.clone(), v.clone()
+            k2[..., j, :] += 5.0
+            v2[..., j, :] += 5.0
+            a = local_exact_attention(q, k, v, w)[..., i, :]
+            b = local_exact_attention(q, k2, v2, w)[..., i, :]
+            assert bool((a - b).abs().max() > 1e-4) == expect_change, (i, j)
+
+
+def test_local_exact_all_valid_without_lengths_and_empty_rows_are_zero_not_nan():
+    q, k, v = _qkv(2, 50)
+    assert torch.equal(local_exact_attention(q, k, v, 16), local_exact_attention(q, k, v, 16, torch.tensor([50, 50])))
+    out = local_exact_attention(q, k, v, 16, torch.tensor([0, 50]))
+    assert torch.isfinite(out).all() and torch.equal(out[0], torch.zeros_like(out[0]))
+
+
+def test_local_exact_is_not_the_block_local_superset():
+    w, L = 8, 96                                   # block_local with block 2w sees up to 4w-1 keys each side
+    q, k, v = _qkv(1, L)
+    exact = local_exact_attention(q, k, v, w)
+    block3 = local_attention(q, k, v, MaskSpec([L], "block_local", block=2 * w))
+    assert float((exact - block3).abs().max()) > 1e-3
+    assert float((exact - reference_attention(q, k, v, MaskSpec([L], "band", half_width=w))).abs().max()) < 1e-5
+
+
+def test_local_exact_rejects_block_smaller_than_window():
+    q, k, v = _qkv(1, 16)
+    with pytest.raises(ValueError):
+        local_exact_attention(q, k, v, 8, block=4)

@@ -124,3 +124,40 @@ def test_real_variants_run_and_their_shift_is_recorded_not_asserted_small(real_d
         assert all(r["status"] == "measured" for r in q)
     finally:
         typed_agent.model.encoder = saved
+
+
+# --------------------------------------------------------------------------- laya:007: exact local attention, layer level
+
+@pytest.mark.parametrize("length", [512, 1024, 2048, 4096, 8192])
+def test_real_local_layers_exact_kernel_matches_native_layer_on_identical_inputs(typed_agent, length):
+    """Every local layer: the exact kernel and the native dense-masked layer, same hidden states, padded tail, <= 1e-5."""
+    import torch
+    from experiments import variants as V
+    enc = typed_agent.model.encoder
+    local = V._local_layers(enc)
+    assert len(local) == 18 and {V._half_width(l.attn, enc.config) for _, l in local} == {64}
+    captured = {}
+
+    def grab(i):
+        def pre(_m, args, kwargs):
+            captured[i] = (args, dict(kwargs))
+        return pre
+    handles = [layer.attn.register_forward_pre_hook(grab(i), with_kwargs=True) for i, layer in local]
+    g = torch.Generator().manual_seed(7)
+    ids = torch.randint(1000, 20000, (2, length), generator=g)
+    att = (torch.arange(length)[None, :] < torch.tensor([length, length - 37])[:, None]).long()
+    try:
+        with torch.no_grad():
+            enc(input_ids=ids * att, attention_mask=att)
+    finally:
+        for h in handles:
+            h.remove()
+    valid = att.bool()
+    worst = {}
+    with torch.no_grad():
+        for i, layer in local:
+            args, kwargs = captured[i]
+            native = type(layer.attn).forward(layer.attn, *args, **kwargs)[0]
+            exact = V._exact_forward(layer.attn, 64)(*args, **kwargs)[0]
+            worst[i] = float((native - exact).abs()[valid].max())
+    assert max(worst.values()) <= 1e-5, worst

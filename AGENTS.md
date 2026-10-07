@@ -19,10 +19,12 @@ Research fork of Laya: sparse attention for encoder-only decision models at 4Kâ€
 ```
 laya/                  Core library trimmed from upstream (agent.py, common.py, layers/attention.py)
 experiments/           Measurement tooling, run with `python -m experiments`
-  cli.py               Commands: manifest, audit, sweep, profile, kernels, report, all, gpu-reference
-  kernels/             Dense, masked, block-local, gather-attend-scatter attention kernels
+  cli.py               Commands: manifest, audit, sweep, profile, kernels, report, all, gpu-reference, tier-e
+  kernels/             Dense, masked, block-local, gather-attend-scatter and exact +/-64 band (local_exact) attention kernels
+  variants.py          Optimized-native variants: fastpath_off, local_exact, local_exact_fastpath_off (laya:007), int8
+  tier_e.py            Tier E check of the compression gate (E1 probabilities, E2 predictions, E3 latency)
 tests/experiments/     Offline tests on a tiny fixture model
-specs/                 Spec Kit features (001-cpu-path-audit, 002-decision-benchmark-baselines)
+specs/                 Spec Kit features (001-cpu-path-audit, 002-decision-benchmark-baselines, 007-local-exact-kernel)
 docs/                  research-plan, sparse-attention-report (draft)
 .specify/              Spec Kit templates, scripts and memory/constitution.md
 ```

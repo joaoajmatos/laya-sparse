@@ -10,6 +10,8 @@ padding sits at the end of a row):
 
 * ``full``         every key.
 * ``block_local``  queries in block ``i`` see keys in blocks ``i-1, i, i+1`` (block = ``block``).
+* ``band``         exact sliding window: query i sees keys j with ``|i-j| <= half_width`` (native
+                   Laya local layers, ``half_width`` 64). Not ``block_local``, which is a superset.
 * ``gather``       queries in block ``i`` see keys in the blocks `gather_blocks` selects: block 0
                    (where Laya puts the question and options), blocks ``i-1, i, i+1``, and evenly
                    spaced blocks up to ``selection_blocks`` in total. Fixed, not learned (R8).
@@ -24,7 +26,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 
-PATTERNS = ("full", "block_local", "gather")
+PATTERNS = ("full", "block_local", "band", "gather")
 
 
 @dataclass
@@ -33,12 +35,15 @@ class MaskSpec:
     pattern: str = "full"
     block: int = 128
     selection_blocks: int = 4
+    half_width: int = 64
 
     def __post_init__(self):
         if self.pattern not in PATTERNS:
             raise ValueError("pattern must be one of %s" % (PATTERNS,))
         if self.block < 1 or self.selection_blocks < 1:
             raise ValueError("block and selection_blocks must be >= 1")
+        if self.half_width < 0:
+            raise ValueError("half_width must be >= 0")
 
     def lengths_tensor(self, device=None) -> torch.Tensor:
         return torch.as_tensor(list(self.lengths), dtype=torch.long, device=device)
@@ -56,6 +61,8 @@ class MaskSpec:
         elif self.pattern == "block_local":
             blk = pos // self.block
             pat = (blk[:, None] - blk[None, :]).abs() <= 1
+        elif self.pattern == "band":
+            pat = (pos[:, None] - pos[None, :]).abs() <= self.half_width
         else:
             idx, ok = gather_blocks(self.n_blocks(L), self.selection_blocks)
             nb = self.n_blocks(L)

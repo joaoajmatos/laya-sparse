@@ -131,9 +131,9 @@ def write_json(run_path: Union[str, Path], name: str, payload: Union[Dict[str, A
     body = {"schema_version": SCHEMA_VERSION, "run_id": run_path.name}
     body.update({k: v for k, v in payload.items() if k not in ("schema_version", "run_id")})
     text = json.dumps(_jsonable(body), indent=2, ensure_ascii=False, allow_nan=False)
-    run_path.mkdir(parents=True, exist_ok=True)
     target = run_path / name
-    fd, tmp = tempfile.mkstemp(dir=str(run_path), prefix="." + name + ".", suffix=".tmp")
+    target.parent.mkdir(parents=True, exist_ok=True)      # `name` may carry a subdirectory (tier_e/probs.L512.json)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix="." + target.name + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text + "\n")

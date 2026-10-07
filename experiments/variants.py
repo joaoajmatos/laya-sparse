@@ -8,6 +8,10 @@ from the architectural baselines and applied outside ``laya/``:
                      instead of dense masked attention (laya:007); the head fast path stays native.
 * ``local_exact_fastpath_off``  the same plus ``fastpath_off``: the **optimized native** that
                      laya:008 and the compression gate use as the cost reference.
+* ``a1``, ``a2`` ... Tier F candidates (laya:008, experiments/candidates.py): A = global layers made block-local with
+                     the header tokens global, B = decision head restricted to header windows. ``<name>_mask`` is the
+                     mask-only reference (a quality diagnostic that also runs on a GPU agent); the plain name is the CPU
+                     path with real skipped work and is CPU-only. a2/b2 are the declared rescue configurations.
 * ``int8_encoder``   dynamic int8 quantization of the encoder's `Linear` layers only; the decision
                      head and its fast path stay native.
 * ``int8_all_nofast`` dynamic int8 quantization of every `Linear` layer, with the fast path off.
@@ -24,7 +28,16 @@ import copy
 import warnings
 from typing import Any, Dict, Optional
 
-VARIANTS = ("none", "fastpath_off", "local_exact", "local_exact_fastpath_off", "int8_encoder", "int8_all_nofast")
+#: Tier F candidate variants -> (candidate, config value, mask_only); the code is in candidates.py (imported lazily).
+CANDIDATES = {
+    "a1": ("A", 128, False), "a1_mask": ("A", 128, True),      # block size
+    "a2": ("A", 256, False), "a2_mask": ("A", 256, True),      # rescue
+    "b1": ("B", 128, False), "b1_mask": ("B", 128, True),      # window half-width
+    "b2": ("B", 256, False), "b2_mask": ("B", 256, True),      # rescue
+}
+CANDIDATE_VARIANTS = tuple(sorted(CANDIDATES))
+VARIANTS = ("none", "fastpath_off", "local_exact", "local_exact_fastpath_off", "int8_encoder",
+            "int8_all_nofast") + CANDIDATE_VARIANTS
 LOCAL_EXACT_VARIANTS = ("local_exact", "local_exact_fastpath_off")
 QUANT_API = "torch.ao.quantization.quantize_dynamic(qint8)"
 
@@ -39,9 +52,12 @@ def unsupported_reason(variant: str, device: str) -> Optional[str]:
         return "unknown variant %r" % variant
     if variant == "none":
         return None
+    if variant in CANDIDATE_VARIANTS and variant.endswith("_mask"):
+        return None                       # mask-only references run on any device (quality diagnostics)
     if device != "cpu":
         what = ("int8 dynamic quantization" if variant.startswith("int8")
-                else "the exact local-attention kernel" if variant.startswith("local_exact") else "the mha fast-path switch")
+                else "the exact local-attention kernel" if variant.startswith("local_exact")
+                else "the candidate CPU path" if variant in CANDIDATE_VARIANTS else "the mha fast-path switch")
         return "%s is a CPU-only variant; not run on %s" % (what, device)
     return None
 
@@ -173,6 +189,34 @@ def apply_variant(agent, variant: str, reversible: bool = False) -> Dict[str, An
         def restore() -> None:        # noqa: F811
             inner_restore()
             _restore()
+    elif variant in CANDIDATE_VARIANTS:
+        from . import candidates
+        composed = None
+        if not variant.endswith("_mask"):
+            # The CPU path runs on top of optimized native (laya:007's exact local kernel; the loader turns the head
+            # fast path off), so F4 isolates the candidate's saving. Mask-only references stay on plain native.
+            composed = apply_local_exact(agent)
+            record.update(composed_with="local_exact", local_exact_layers=composed["layers"],
+                          local_exact_half_width=composed["half_width"])
+        try:
+            rec = candidates.apply_candidate(agent, variant)
+        except Exception:
+            if composed is not None:
+                composed["restore"]()
+            raise
+        inner_restore = rec.pop("restore")
+        if composed is not None:
+            _first = inner_restore
+
+            def inner_restore() -> None:        # noqa: F811
+                _first()
+                composed["restore"]()
+        record.update({k: v for k, v in rec.items() if k not in ("info", "layers")}, candidate_layers=rec["layers"])
+        _restore = restore
+
+        def restore() -> None:        # noqa: F811
+            inner_restore()
+            _restore()
     elif variant == "int8_encoder":
         _quantize(agent.model.encoder)
         record.update(quantization_api=QUANT_API, quantized_layers=count_quantized(agent.model.encoder))
@@ -208,7 +252,7 @@ def load_for_variant(model: str, revision: Optional[str], threads: Optional[int]
     Phase 1). ``int8_encoder`` keeps the native fast path.
     """
     from .runner import load_agent
-    off = ("fastpath_off", "local_exact_fastpath_off", "int8_all_nofast")
+    off = ("fastpath_off", "local_exact_fastpath_off", "int8_all_nofast") + CANDIDATE_VARIANTS
     agent, info = load_agent(model, revision, threads, mha_fastpath=variant not in off)
     rec = apply_variant(agent, variant if variant != "fastpath_off" else "none")
     rec["variant"] = variant

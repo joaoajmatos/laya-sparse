@@ -66,7 +66,7 @@ A function draws two disjoint 20-case sets (A, B) from dev cases that are not in
 ## Requirements
 
 - **FR-001**: Candidates are applied outside `laya/` (`laya_diff_empty: true`), as variants in `experiments/variants.py` backed by `experiments/candidates.py` and `experiments/kernels/` (new `block_global.py`), reversible in tests.
-- **FR-002**: The global-token rule is one function of the input ids and the tokenizer's special ids: header span `[CLS] question [SEP] ([MASK] option)* [SEP]` (see Clarifications for the exact set). It never reads gold labels or the state text.
+- **FR-002**: The global-token rule is one function of the input ids and the tokenizer's special ids: [CLS], the question tokens and the option [MASK] markers (see Clarifications). It never reads gold labels or the state text.
 - **FR-003**: Every mask-only variant has a CPU path twin; both are proven equivalent on the fixture (tolerance 1e-5). A mask-only variant is labeled a quality diagnostic; only a CPU path may support an F4 claim.
 - **FR-004**: Rescue configurations differ from the primary only by one numeric parameter (block 256, window 256), declared in the plan JSON, registered as `a2`/`a2_mask`/`b2`/`b2_mask`; no run is scheduled by this spec.
 - **FR-005**: Nothing scores a final-split item. `eval` still refuses `--split final`.
@@ -87,7 +87,8 @@ Resolved from the brief and plan (2026-10-07):
 - Q: 4K cell? A: dtype fp16 and a parity cell, approved by the human ('approve atlas stuff').
 - Q: Where does the plan JSON come from? A: constants in `experiments/evalplan.py`; the markdown is referenced by hash only.
 
-**Needing the researcher or Research Lead (options in the checkpoint message; defaults below are used so offline work can proceed, and are one function to change):**
-1. **Exact global-token set.** The plan says "question, option-marker and CLS tokens". Options: (a) the whole header span from [CLS] to the [SEP] that closes the options (question text and option texts, at most `head_max_len`, 192 or 256 tokens), contiguous and equal to the `gas.py` "block 0" idea; (b) only [CLS], the question-text tokens and the option [MASK] markers, excluding the option-description tokens. **Default used: (a).** It matters: (b) makes B1's set S smaller and A1's hub smaller.
-2. **Parity seed.** Proposed `2026100801` (date-derived, not chosen after seeing any id). Any value works if fixed before ids are drawn.
-3. **B1 F4 expectation.** Stated above; a human may want to drop B1's F4 claim or keep screening for F1 only. Not decided here.
+Answered by the Research Lead and approved by the human (standing approval 'approve atlas's answers', 2026-10-07):
+1. **Global-token set = (b)**: [CLS], the question tokens (between [CLS] and the first [SEP]) and each option [MASK] marker. Option description tokens, both [SEP] tokens and the state are not global (plan v2.0 section 3, literal wording). Whole-header-global is an unfunded ablation, not part of this gate. (The default of an earlier draft, the whole header, was wrong and is replaced.)
+2. **Parity seed 2026100801.** Draw: pool = dev cases in `splits.json` `half_sample.dev` minus `variant_sample` (40 cases, 10 per workflow); within each workflow order by `sha256("2026100801:" + case_id)`; first 5 to set A, next 5 to set B. Offline, deterministic, no model. Script and ids are committed (with their sha256) before any gate run; if the real splits cannot meet plan section 4 the failure is reported and the rule is not changed.
+3. **B1 stays in the F4 comparison** (measured, not asserted). The B1 CPU path is built offline here because it is small and tested; running it is conditional on B1 not being dropped on F1 (plan section 2).
+4. **Plan text**: the pre-registration markdown (`gate-plan-v2.0-prereg.md`, sha256 `2580c62a2d9e79387fd4e79d1212099c03852785d441cad6da99e97b808b5dc8`) is committed unchanged as `docs/gate-plan-v2.md`; the emitter records its sha256.

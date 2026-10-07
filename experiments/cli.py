@@ -1370,6 +1370,9 @@ def _tier_e_args(p: argparse.ArgumentParser) -> None:
                    help="compare: condition id prefix of the candidate's quality predictions (length appended as .L<n>)")
     p.add_argument("--candidate-run", default=None, help="compare/report: run id holding the candidate's eval and latency results")
     p.add_argument("--reference-run", default="p2-dev", help="compare: run id holding the reference native CPU predictions")
+    p.add_argument("--reference-root", default=None,
+                   help="compare: results directory that holds the reference run (default: this checkout's experiments/results; "
+                        "a gate run from a clean worktree points it at the main checkout's, read only)")
     p.add_argument("--latency-run", default=None, help="report: run id of the latency measurements (default: --candidate-run)")
     p.add_argument("--allow-dirty", action="store_true", help="tests only: a gate run needs a clean git tree")
     p.add_argument("--dry-run", action="store_true", help="probs: print the item counts and the estimated CPU hours, run nothing")
@@ -1415,7 +1418,7 @@ def _cmd_tier_e(args: argparse.Namespace) -> int:
         code = tier_e.require_clean_tree(True)
         if args.action == "compare":
             cand_run = results.run_dir(args.candidate_run or args.run_id)
-            ref_run = results.run_dir(args.reference_run)
+            ref_run = results.run_dir(args.reference_run, args.reference_root)
             cand, ref = {}, {}
             for L in tier_e.PARITY_LENGTHS:
                 cand.update(tier_e._load_predictions(cand_run, "quality", "%s.L%d" % (args.candidate_condition, L)))

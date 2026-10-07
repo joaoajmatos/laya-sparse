@@ -422,3 +422,33 @@ def test_gpu_condition_ids_carry_the_device(fam):
     assert c["condition_id"] == "native.none.gpu.L2048" and c["device"] == "gpu"
     t = E.tune_window.__defaults__          # tuning takes a device too
     assert "cpu" in t
+
+
+def test_final_split_runs_all_cases_at_4k_and_8k_while_dev_and_calibration_keep_the_half_sample():
+    """plan v2 (laya:008): 200 final cases at 4,096 and 8,192; no final item is scored here (only selected)."""
+    cases = {"dev": ["d%d" % i for i in range(6)], "calibration": ["c%d" % i for i in range(4)],
+             "final": ["f%d" % i for i in range(10)]}
+    splits = {"splits": {s: {"case_ids": ids} for s, ids in cases.items()},
+              "half_sample": {"dev": cases["dev"][:3], "calibration": cases["calibration"][:2], "final": cases["final"][:5]}}
+    items = [{"case_id": c, "length": L, "variant": "distractor@mid", "split": s, "item_id": "%s|%d" % (c, L)}
+             for s, ids in cases.items() for c in ids for L in (512, 2048, 4096, 8192)]
+    for L in (4096, 8192):
+        assert {i["case_id"] for i in E.select_items(items, "final", splits, L, ["distractor@mid"])} == set(cases["final"])
+        assert len(E.select_items(items, "dev", splits, L, ["distractor@mid"])) == 3
+        assert len(E.select_items(items, "calibration", splits, L, ["distractor@mid"])) == 2
+    for L in (512, 2048):
+        assert len(E.select_items(items, "final", splits, L, ["distractor@mid"])) == 10
+    # only the length rule changed: a case-id restriction still applies to the final split
+    assert len(E.select_items(items, "final", splits, 4096, ["distractor@mid"], case_ids=["f1", "f9"])) == 2
+
+
+def test_mask_only_candidates_apply_to_a_gpu_agent_but_cpu_paths_do_not(fastpath_checkpoint):
+    import laya
+    from experiments.results import Refusal
+    agent = laya.Agent(fastpath_checkpoint, device="cpu")          # stands in for a CUDA agent: the helper is device-blind
+    rec = E.apply_mask_only_variant(agent, "b1_mask")
+    assert rec["variant"] == "b1_mask" and rec["mask_only"] is True and rec.get("composed_with") is None
+    agent.model.__dict__.pop("forward", None)
+    for bad in ("a1", "b1", "local_exact", "fastpath_off", "none"):
+        with pytest.raises(Refusal):
+            E.apply_mask_only_variant(agent, bad)

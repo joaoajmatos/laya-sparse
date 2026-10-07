@@ -1,0 +1,2 @@
+# The pre-registered plan text is stored byte-exact: its sha256 is recorded in the plan JSON.
+docs/gate-plan-v2.md -text

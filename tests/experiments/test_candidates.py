@@ -166,7 +166,7 @@ def test_b_window_clips_and_end_to_end_predict_runs(agent):
     rec = V.apply_variant(agent, "b1", reversible=True)
     try:
         p = probs(agent)
-        assert rec["variant"] == "b1" and rec["window"] == 128 and rec["layers"] == ["head.0"]
+        assert rec["variant"] == "b1" and rec["window"] == 128 and rec["candidate_layers"] == ["head.0"]
     finally:
         rec["restore"]()
     assert abs(sum(p.values()) - 1.0) < 1e-3
@@ -181,3 +181,21 @@ def test_candidates_refuse_models_without_their_layers(agent):
     agent.model.head = None
     with pytest.raises(C.CandidateError, match="no decision-head"):
         C.apply_b(agent, 8, False)
+
+
+@pytest.mark.parametrize("name,composed", [("a1", True), ("b1", True), ("a1_mask", False), ("b1_mask", False)])
+def test_cpu_candidates_run_on_top_of_optimized_native_and_mask_only_ones_do_not(agent, name, composed):
+    enc = agent.model.encoder
+    local = [i for i, l in enumerate(enc.layers) if l.attn.sliding_window is not None]
+    rec = V.apply_variant(agent, name, reversible=True)
+    try:
+        assert rec.get("composed_with") == ("local_exact" if composed else None)
+        for i, l in enumerate(enc.layers):
+            if i in local:
+                assert ("forward" in l.attn.__dict__) == composed          # the exact local kernel is in place only when composed
+        p = probs(agent)
+        assert abs(sum(p.values()) - 1.0) < 1e-3
+    finally:
+        rec["restore"]()
+    assert not any("forward" in l.attn.__dict__ for l in enc.layers) and not enc._forward_pre_hooks
+    assert "forward" not in agent.model.__dict__

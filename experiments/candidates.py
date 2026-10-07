@@ -25,7 +25,7 @@ import torch.nn.functional as F
 GLOBAL_MODES = ("header", "markers")
 DEFAULT_GLOBAL_MODE = "markers"    # plan v2.0 s.3 (Research Lead, 2026-10-07): [CLS] + question tokens + option [MASK] markers
 
-from .variants import CANDIDATES     # noqa: E402  (the table lives with the variant names)
+from .variants import CANDIDATES, _key_valid     # noqa: E402  (the table lives with the variant names; one key-validity reader)
 
 
 class CandidateError(RuntimeError):
@@ -94,17 +94,6 @@ def _install_context(agent, mode: str) -> Tuple[_Context, Any]:
         return None
     handle = agent.model.encoder.register_forward_pre_hook(pre, with_kwargs=True)
     return ctx, handle
-
-
-def _key_valid(attention_mask, B: int, L: int):
-    """Per-key validity ``[B, L]`` from the 4-D mask transformers hands a layer (diagonal); None means no padding."""
-    if attention_mask is None:
-        return None
-    m = attention_mask
-    diag = m[:, 0].diagonal(dim1=-2, dim2=-1) if m.dim() == 4 else m
-    if diag.dtype != torch.bool:
-        diag = diag == 0 if diag.is_floating_point() and bool((diag <= 0).all()) else diag > 0
-    return diag.expand(B, L) if diag.shape[0] == 1 and B > 1 else diag
 
 
 # --------------------------------------------------------------------------- A1

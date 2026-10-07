@@ -1415,7 +1415,7 @@ def _cmd_tier_e(args: argparse.Namespace) -> int:
             for p in paths:
                 print(p)
             return EXIT_OK
-        code = tier_e.require_clean_tree(True)
+        code = tier_e.require_clean_tree(args.allow_dirty)
         if args.action == "compare":
             cand_run = results.run_dir(args.candidate_run or args.run_id)
             ref_run = results.run_dir(args.reference_run, args.reference_root)

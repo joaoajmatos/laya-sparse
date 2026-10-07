@@ -159,20 +159,20 @@ def test_local_exact_matches_reference_and_dense_masked(L, w):
     assert float((out - dense_masked_attention(q, k, v, spec)).abs().max()) < 1e-5
 
 
-def test_local_exact_boundary_distance_w_in_w_plus_one_out():
-    w, L = 4, 40
+@pytest.mark.parametrize("w,L", [(4, 40), (64, 129), (64, 257)])
+def test_local_exact_boundary_distance_w_in_w_plus_one_out(w, L):
     q, k, v = _qkv(1, L)
-    k2, v2 = k.clone(), v.clone()
-    for i in (w, 31, 32, 33):                     # queries around block edges (block = w)
-        for j, expect_change in ((i + w, True), (i + w + 1, False)):
-            if j >= L:
+    queries = sorted({i for i in (0, w, w + 1, 2 * w - 1, 2 * w, 3 * w, L - w - 2, L - w - 1) if 0 <= i < L})
+    for i in queries:
+        for j, expect_change in ((i + w, True), (i + w + 1, False), (i - w, True), (i - w - 1, False)):
+            if not 0 <= j < L:
                 continue
             k2, v2 = k.clone(), v.clone()
             k2[..., j, :] += 5.0
             v2[..., j, :] += 5.0
             a = local_exact_attention(q, k, v, w)[..., i, :]
             b = local_exact_attention(q, k2, v2, w)[..., i, :]
-            assert bool((a - b).abs().max() > 1e-4) == expect_change, (i, j)
+            assert bool((a - b).abs().max() > 1e-4) == expect_change, (w, L, i, j)
 
 
 def test_local_exact_all_valid_without_lengths_and_empty_rows_are_zero_not_nan():

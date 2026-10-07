@@ -142,3 +142,15 @@ def test_run_probs_writes_one_file_per_length_and_resumes(fastpath_checkpoint, t
     assert body["device"] == "cpu" and body["dtype"] == "fp32" and body["final_scored_items"] == 0 and len(body["rows"]) == 2
     again = T.run_probs(tmp_path, "does-not-exist", None, 1, items, {}, log=lambda *_: None)
     assert again == paths                                             # finished lengths are not rerun (no model load)
+
+
+@pytest.mark.parametrize("action", ["compare", "report"])
+def test_cli_compare_and_report_refuse_a_dirty_tree_like_probs(action, monkeypatch, tmp_path):
+    import argparse
+    import experiments.manifest as M
+    from experiments import cli
+    monkeypatch.setattr(M, "code_info", lambda *a, **k: {"git_dirty": True, "laya_diff_empty": True, "dirty_paths": ["x"]})
+    ns = argparse.Namespace(action=action, allow_dirty=False, run_path=tmp_path, run_id="t", lengths=None,
+                            items_per_length=20, dry_run=False)
+    with pytest.raises(cli.ToolError, match="clean git tree"):
+        cli._cmd_tier_e(ns)

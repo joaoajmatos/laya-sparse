@@ -398,3 +398,32 @@ four variants each; the length profile shows 93% of customer-service cases fit).
 
 **Caveats that apply to all of the above.** The data is synthetic and short; the distractor records come from the training split the checkpoint was trained on; the audit was by an
 AI assistant, not a human; the variants run used 10 cases (spec, 2026-09-30); and the upstream test split is public.
+
+
+## R22. Accuracy by variant (descriptive, from the existing p2-dev dev predictions, 2026-10-01)
+
+Not a new run: the dev GPU-scored predictions split by item variant (600 items per cell at 512 to 2,048 tokens, 300 at 4,096 and 8,192). These are descriptive
+percentages without intervals; with this many items a cell has a standard error of about 2 to 3 points (more once cases are clustered), so differences of a few points are not resolved.
+GPU-scored, so unverified against CPU (R21).
+
+Native accuracy (%), 512 / 1,024 / 2,048 / 4,096 / 8,192 tokens:
+- `neutral@mid` (filler text, no other records): 57.7 / 54.5 / 47.7 / 46.3 / 41.7
+- `distractor@begin`: 62.1 / 53.0 / 53.7 / 50.3 / 49.3
+- `distractor@mid`: 61.8 / 50.3 / 47.2 / 46.3 / 43.7
+- `distractor@end`: 58.8 / 47.5 / 47.7 / 44.3 / 43.3
+- oracle (every variant): 74.1 / 74.0 / 74.0 / 74.7 / 74.7
+
+Window (size 256): `neutral@mid` 61.4 / 57.8 / 58.8 / 57.7 / 58.0; the three distractor variants fall from 59.8 to 63.0 at 512 tokens to 46.0 to 49.0 at 8,192.
+Retrieval (1,024 budget): `neutral@mid` 57.7 / 54.5 / 52.8 / 51.3 / 53.7; distractor variants 46.7 to 49.0 at 2,048 tokens and above.
+
+What this does and does not show:
+- The loss is not mainly a distractor effect. Native does worst on neutral filler at 8,192 tokens (41.7), no worse on near-matching distractors, which were suspected
+  because the checkpoint was trained on the records that supply them. The earlier suspicion (R21, Limits) is not supported as the main driver.
+- Added text of any kind costs accuracy even where nothing is truncated: at 512 tokens native is 57.7 to 62.1 against the oracle's 74.1. The oracle has the same framing, so the framing alone is not the cause.
+- Window stays near 58 on filler at every length, so it removes the length effect for filler. It does not for distractors (46.0 to 52.0 at 2,048 tokens and above), and neither does
+  retrieval. Both pick passages by similarity to the question, and a near-matching distractor is similar, which is a hypothesis this breakdown does not test.
+- Not established: which part of the added text hurts (position, amount, or the markers), and whether training with such inputs would fix it. Position labels (`begin`, `mid`, `end`)
+  are the construction's, recorded per item; the differences between them are within the resolution of this breakdown except possibly `distractor@begin`.
+
+Implication for Phase 3 (a reading, not a result): if the checkpoint degrades under any surrounding text, then selection that strips the text is what helps on filler, and a training or
+robustness question may matter more than attention cost. Nothing here was measured on realistic documents.

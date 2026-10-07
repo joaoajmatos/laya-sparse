@@ -252,7 +252,7 @@ def load_for_variant(model: str, revision: Optional[str], threads: Optional[int]
     Phase 1). ``int8_encoder`` keeps the native fast path.
     """
     from .runner import load_agent
-    off = ("fastpath_off", "local_exact_fastpath_off", "int8_all_nofast") + CANDIDATE_VARIANTS
+    off = ("fastpath_off", "local_exact_fastpath_off", "int8_all_nofast") + tuple(v for v in CANDIDATE_VARIANTS if not v.endswith("_mask"))   # mask-only stays on plain native
     agent, info = load_agent(model, revision, threads, mha_fastpath=variant not in off)
     rec = apply_variant(agent, variant if variant != "fastpath_off" else "none")
     rec["variant"] = variant

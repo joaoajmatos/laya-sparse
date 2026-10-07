@@ -61,7 +61,7 @@ A function draws two disjoint 20-case sets (A, B) from dev cases that are not in
 
 **Acceptance**:
 1. The same seed gives the same sets; A and B are disjoint, both disjoint from the variant sample, both inside dev, each balanced across the four workflows as far as 20 allows (5 per workflow, reported).
-2. The function and a CLI subcommand exist and are tested on a fixture; **it is not run on the real splits in this PR and no case id is committed**. The orchestrator schedules the pre-registration commit (v2.0) that records seed and ids.
+2. The function and a CLI subcommand exist and are tested on a fixture. After the Research Lead fixed the seed and the procedure (docs/gate-plan-v2.md section 4), the draw was run **once, offline, on the real `splits.json`** (deterministic, no model, no run of any gate); the ids are committed in `specs/008-tier-f-screen/parity-ids.json` with their sha256, before any gate run (plan sections 4 and 7). They are never re-drawn after results are seen.
 
 ## Requirements
 

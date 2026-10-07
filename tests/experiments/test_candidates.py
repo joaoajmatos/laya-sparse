@@ -199,3 +199,19 @@ def test_cpu_candidates_run_on_top_of_optimized_native_and_mask_only_ones_do_not
         rec["restore"]()
     assert not any("forward" in l.attn.__dict__ for l in enc.layers) and not enc._forward_pre_hooks
     assert "forward" not in agent.model.__dict__
+
+
+@pytest.mark.parametrize("name,fast", [("a1", False), ("b1", False), ("a1_mask", True), ("b1_mask", True), ("none", True)])
+def test_loader_fast_path_setting_cpu_paths_off_mask_only_on_plain_native(name, fast, monkeypatch, agent):
+    from experiments import runner
+    seen = {}
+
+    def fake_load(model, revision, threads, compile=False, mha_fastpath=True):
+        seen["fast"] = mha_fastpath
+        return agent, {"mha_fastpath": mha_fastpath}
+    monkeypatch.setattr(runner, "load_agent", fake_load)
+    _, info, rec = V.load_for_variant("m", None, 1, name)
+    try:
+        assert seen["fast"] is fast
+    finally:
+        pass

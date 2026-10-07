@@ -1448,3 +1448,31 @@ def _cmd_tier_e(args: argparse.Namespace) -> int:
         return EXIT_OK
     except (Refusal, FileNotFoundError, ValueError, tier_e.TierEError) as exc:
         raise ToolError(str(exc))
+
+def _parity_draw_args(p: argparse.ArgumentParser) -> None:
+    from . import parity_draw
+    _data_root_arg(p)
+    p.add_argument("--parity-seed", type=int, default=parity_draw.PARITY_SEED, help="default: the seed fixed in docs/gate-plan-v2.md")
+    p.add_argument("--out", default=None, help="write the drawn ids (JSON) here; default: print only")
+
+
+@command("parity-draw", "Draw the two fresh 20-case parity sets from splits.json (deterministic, no model, no run).",
+         _parity_draw_args)
+def _cmd_parity_draw(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+    from . import data, parity_draw
+    try:
+        splits = data.read_data_json("splits.json", args.data_root)
+        body = parity_draw.draw_fresh_sets(splits, seed=args.parity_seed)
+    except (FileNotFoundError, parity_draw.ParityDrawError) as exc:
+        raise ToolError(str(exc))
+    problems = parity_draw.check_sets(body, splits)
+    if problems:
+        raise ToolError("the drawn sets break the plan's rule: %s" % problems)
+    text = json.dumps(body, indent=2, sort_keys=True) + "\n"
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8", newline="\n")
+        print(args.out)
+    print("seed %d, ids sha256 %s" % (body["seed"], body["ids_sha256"]))
+    return EXIT_OK

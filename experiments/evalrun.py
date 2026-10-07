@@ -310,7 +310,8 @@ def run_solvability(run_path: Path, models: Sequence[str] = ("fine_tuned", "base
 # dead child could not finish as `failed` (FR-025). The final split is refused (FR-013) and no run
 # starts before the audit of the current families has passed (research.md R12).
 
-TIER2_LENGTHS = (4096, 8192)          # run on the recorded half-sample only (research.md R11)
+TIER2_LENGTHS = (4096, 8192)          # run on the recorded half-sample only (research.md R11), except the final split
+FINAL_FULL_LENGTHS = TIER2_LENGTHS    # plan v2 (docs/gate-plan-v2.md section 7): the final split runs all 200 cases there
 VARIANT_LENGTHS = (512, 2048, 8192)   # optimized variants: fixed 20-case dev sample at these lengths
 TUNE_LENGTHS = (1024, 2048)
 DEFAULT_CHUNK_SECONDS = 1800.0
@@ -340,12 +341,13 @@ def select_items(items: Iterable[Dict[str, Any]], split: str, splits: Dict[str, 
                  max_cases: Optional[int] = None) -> List[Dict[str, Any]]:
     """The items one condition runs: one length, the chosen variants, and the tier rule.
 
-    Lengths of 4,096 and 8,192 tokens run on the split's recorded half-sample (research.md R11). `case_ids`
+    Lengths of 4,096 and 8,192 tokens run on the split's recorded half-sample (research.md R11), except that the
+    final split runs all of its cases there (plan v2; nothing scores a final item before the plan is frozen). `case_ids`
     restricts further (the variant sample); `max_cases` keeps the first N cases in sorted order (a pilot,
     which the caller must record).
     """
     allowed = set(splits["splits"][split]["case_ids"])
-    if length in TIER2_LENGTHS:
+    if length in TIER2_LENGTHS and not (split == "final" and length in FINAL_FULL_LENGTHS):
         allowed &= set(splits["half_sample"][split])
     if case_ids is not None:
         allowed &= set(case_ids)
@@ -358,6 +360,15 @@ def select_items(items: Iterable[Dict[str, Any]], split: str, splits: Dict[str, 
 def _iter_split_items(fid: str, split: str, root: Optional[Path]):
     from . import families
     return families.read_items(families.items_dir(fid, root) / ("%s.jsonl.gz" % split))
+
+
+def apply_mask_only_variant(agent, variant: str) -> Dict[str, Any]:
+    """Apply a mask-only candidate variant (``a1_mask`` ...) to a GPU agent; a quality diagnostic, never a cost number."""
+    from . import variants as V
+    if not variant.endswith("_mask") or variant not in V.CANDIDATE_VARIANTS:
+        raise Refusal("device_mismatch", "variant %r is CPU-only; only mask-only candidate variants run on a GPU agent" % variant)
+    rec = V.apply_variant(agent, variant)
+    return {k: v for k, v in rec.items() if k != "restore"}
 
 
 def eval_condition(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -381,6 +392,8 @@ def eval_condition(spec: Dict[str, Any]) -> Dict[str, Any]:
     if cond.get("device", "cpu") == "gpu":
         from .latency import _load_gpu_agent
         agent, vrec = _load_gpu_agent(spec["model"], spec.get("revision")), {"variant": "none"}
+        if cond["variant"] != "none":
+            vrec = apply_mask_only_variant(agent, cond["variant"])
     else:
         agent, info, vrec = V.load_for_variant(spec["model"], spec.get("revision"), spec.get("threads"), cond["variant"])
     runner = build_runner(cond["name"], cond["params"])

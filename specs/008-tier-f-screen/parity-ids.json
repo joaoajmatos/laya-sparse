@@ -1,0 +1,80 @@
+{
+  "dev_split_fingerprint": "9fe123db65aa5de37b9431ccb394fbc165a2286805f907a804cfc76f6c9f5580",
+  "ids_sha256": "58eed998500a6bc418b243d1a39c5a7cacc12471ed6fc986ef5aceecc45e954f",
+  "item_variant": "distractor@mid",
+  "lengths": [
+    512,
+    2048,
+    4096,
+    8192
+  ],
+  "per_workflow": {
+    "agent_trace_observability": {
+      "pool": 10,
+      "set_a": 5,
+      "set_b": 5
+    },
+    "customer_service": {
+      "pool": 10,
+      "set_a": 5,
+      "set_b": 5
+    },
+    "invoice_processing": {
+      "pool": 10,
+      "set_a": 5,
+      "set_b": 5
+    },
+    "security_incidents": {
+      "pool": 10,
+      "set_a": 5,
+      "set_b": 5
+    }
+  },
+  "pool_size": 40,
+  "procedure": "pool = half_sample.dev minus variant_sample; per workflow order by sha256(\"<seed>:\" + case_id); first 5 to A, next 5 to B",
+  "seed": 2026100801,
+  "set_a": [
+    "agent_trace_observability_000004",
+    "agent_trace_observability_000006",
+    "agent_trace_observability_000020",
+    "agent_trace_observability_000051",
+    "agent_trace_observability_000052",
+    "customer_service_000018",
+    "customer_service_000037",
+    "customer_service_000052",
+    "customer_service_000053",
+    "customer_service_000073",
+    "invoice_processing_000023",
+    "invoice_processing_000056",
+    "invoice_processing_000058",
+    "invoice_processing_000060",
+    "invoice_processing_000070",
+    "security_incidents_000040",
+    "security_incidents_000049",
+    "security_incidents_000054",
+    "security_incidents_000073",
+    "security_incidents_000083"
+  ],
+  "set_b": [
+    "agent_trace_observability_000001",
+    "agent_trace_observability_000005",
+    "agent_trace_observability_000010",
+    "agent_trace_observability_000046",
+    "agent_trace_observability_000049",
+    "customer_service_000008",
+    "customer_service_000058",
+    "customer_service_000064",
+    "customer_service_000074",
+    "customer_service_000081",
+    "invoice_processing_000022",
+    "invoice_processing_000031",
+    "invoice_processing_000041",
+    "invoice_processing_000046",
+    "invoice_processing_000073",
+    "security_incidents_000019",
+    "security_incidents_000030",
+    "security_incidents_000041",
+    "security_incidents_000071",
+    "security_incidents_000091"
+  ]
+}

@@ -122,3 +122,56 @@ def test_freeze_fails_when_any_result_names_a_final_split_item(tmp_path):
 def test_no_pilot_comparisons_yet_is_stated(tmp_path):
     body = P.plan_body(tmp_path)
     assert body["pilot"]["comparisons"] == [] and body["resolvable"] is False and "no dev pilot" in body["statement"]
+
+
+# --------------------------------------------------------------------------- plan v2 (laya:008)
+
+def test_plan_v2_json_from_constants_with_hashes_and_no_final_items(tmp_path):
+    md = tmp_path / "plan.md"
+    md.write_bytes(b"line one\r\nline two\r\n")
+    ids = tmp_path / "ids.json"
+    ids.write_text(json.dumps({"seed": 2026100801, "ids_sha256": "ab" * 32, "dev_split_fingerprint": "cd" * 32}), encoding="utf-8")
+    run = tmp_path / "run"
+    body = P.freeze_plan_v2(run, plan_md=md, parity_ids=ids)
+    on_disk = json.loads((run / "evaluation_plan_v2.json").read_text(encoding="utf-8"))
+    assert on_disk["version"] == 2 and on_disk["revision"] == 0 and on_disk["version_reason"] == "compression gate tiers E/F/Q"
+    assert on_disk["final_scored_items"] == 0 and len(on_disk["fingerprint"]) == 64 and body["fingerprint"] == on_disk["fingerprint"]
+    f = on_disk["plan"]["tiers"]["F"]
+    assert f["F1"]["lower_bound_min"] == 0.95 and f["F2"]["lower_bound_min_points"] == -2.0
+    assert f["F3"]["max_excess"] == 0.02 and f["F4"]["min_gain"] == 0.20 and on_disk["plan"]["bootstrap"]["resamples"] == 5000
+    assert on_disk["plan"]["parity"]["margin"] == 0.01 and on_disk["plan"]["parity"]["lengths"] == [512, 2048, 4096, 8192]
+    assert on_disk["plan"]["final_split"]["full_lengths"] == [4096, 8192] and on_disk["plan"]["final_split"]["cases_at_full_lengths"] == 200
+    import hashlib
+    assert on_disk["plan_markdown"]["sha256"] == hashlib.sha256(b"line one\r\nline two\r\n").hexdigest()   # exact bytes
+    assert on_disk["parity_ids"]["ids_sha256"] == "ab" * 32
+    assert (run / "evaluation_plan_v2.md").exists() and not (run / "evaluation_plan.json").exists()      # v1 untouched
+
+
+def test_plan_v2_refuses_final_items_an_existing_file_and_a_wrong_seed(tmp_path):
+    run = tmp_path / "run"
+    P.freeze_plan_v2(run)
+    with pytest.raises(Refusal):
+        P.freeze_plan_v2(run)
+    with pytest.raises(ValueError):
+        P.freeze_plan_v2(run, new_version=True)
+    again = P.freeze_plan_v2(run, new_version=True, reason="v2.1 freeze")
+    assert again["revision"] == 1
+    write(run, "native.none.cpu.L8192", [rec("c0|q0", "c0", "final", True)])
+    with pytest.raises(SplitLocked):
+        P.freeze_plan_v2(run, new_version=True, reason="x")
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"seed": 1, "ids_sha256": "0", "dev_split_fingerprint": "0"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="seed"):
+        P.freeze_plan_v2(tmp_path / "run2", parity_ids=bad)
+
+
+def test_the_committed_plan_text_and_parity_ids_match_the_emitter_constants():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    md, ids = root / "docs" / "gate-plan-v2.md", root / "specs" / "008-tier-f-screen" / "parity-ids.json"
+    assert P._file_sha256(md) == "2580c62a2d9e79387fd4e79d1212099c03852785d441cad6da99e97b808b5dc8"
+    d = json.loads(ids.read_text(encoding="utf-8"))
+    assert d["seed"] == P.PLAN_V2["parity"]["seed"] == 2026100801 and len(d["set_a"]) == len(d["set_b"]) == 20
+    text = md.read_text(encoding="utf-8")
+    for needle in ("2026100801", "0.01", "F1", "4,096"):
+        assert needle in text

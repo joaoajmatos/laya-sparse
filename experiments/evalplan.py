@@ -232,3 +232,120 @@ def render_plan(b: Dict[str, Any]) -> str:
                         "n/a" if p["icc"] is None else "%.2f" % p["icc"], s.get("required_cases"), b["available_cases"],
                         "n/a" if s.get("power_at_available") is None else "%.2f" % s["power_at_available"], s.get("resolvable")))
     return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- plan v2 (compression gate, laya:008)
+
+PLAN_V2_REASON = "compression gate tiers E/F/Q"
+PLAN_V2_FILE = "evaluation_plan_v2.json"
+
+#: The constants of docs/gate-plan-v2.md (sections 2 to 6). The JSON is built from these, never parsed from the markdown;
+#: the markdown is tied to the JSON only by its sha256.
+PLAN_V2 = {
+    "lengths": [512, 1024, 2048, 4096, 8192],
+    "tiers": {
+        "E": {"E1": "per local layer and end to end, probabilities within 1e-5 absolute of native fp32 on CPU at 512, 1024, 2048, 4096, 8192",
+              "E2": "100% identical predicted answers on the CPU parity subset (20 dev cases, distractor@mid, 512/2048/8192; 95/100/100 items)",
+              "E3": "i7-8700 p50 of optimized native not slower than fastpath_off native at any length (reported, not gated beyond that)"},
+        "F": {"F1": {"metric": "top-label agreement with optimized native, same device and dtype", "lower_bound_min": 0.95,
+                     "interval": "case-clustered percentile bootstrap, 95%"},
+              "F2": {"metric": "accuracy difference (candidate - native)", "lower_bound_min_points": -2.0},
+              "F3": {"metric": "temperature-scaled classification ECE above native's", "max_excess": 0.02,
+                     "note": "temperatures fitted on the calibration split, one per condition; cannot rescue a failed F1 or F2"},
+              "F4": {"metric": "i7-8700 p50 below optimized-native p50 at the same length", "min_gain": 0.20, "p95": "not worse",
+                     "note": "a CPU implementation that really skips work; a mask-only prototype is a quality diagnostic"}},
+        "Q": {"status": "defined, not funded (S2 deferred)", "margin_points": 5.0, "claim_points": 2.0},
+    },
+    "bootstrap": {"resamples": 5000, "interval": 0.95, "unit": "case"},
+    "candidate_verdict": "passes at a length if F1, F2, F3 and F4 hold; Raya support only if it passes at 4096 and 8192 and does not "
+                         "fail F1 or F2 at 512, 1024, 2048 or original length",
+    "candidates": {
+        "A1": {"change": "the 10 global-attention layers become block-local (block 128, three-block span)",
+               "global_tokens": ["[CLS]", "question tokens (between [CLS] and the first [SEP])", "option [MASK] markers"],
+               "not_global": ["option description tokens", "[SEP] tokens", "state tokens"], "block": 128,
+               "variants": {"cpu": "a1", "mask_only": "a1_mask"}},
+        "B1": {"change": "decision-head self-attention keys restricted to the same global tokens plus a +/-128 window around each",
+               "window": 128, "variants": {"cpu": "b1", "mask_only": "b1_mask"}},
+        "rescue": {"A2": {"block": 256}, "B2": {"window": 256},
+                   "rule": "only if not dropped and the primary's dev agreement point estimate is in [90%, 95%) at 4K or at 8K; "
+                           "a point estimate below 90% at any of 2K, 4K, 8K drops the candidate (dropping wins)"},
+    },
+    "comparisons": ["C-E", "C-A", "C-B", "C-lat", "C-par", "C-ref"],
+    "parity": {"margin": 0.01, "margin_rule": "a CPU/GPU disagreement counts only if the CPU top-two margin exceeds 0.01",
+               "seed": 2026100801, "cases_per_set": 20, "sets": 2, "item_variant": "distractor@mid",
+               "lengths": [512, 2048, 4096, 8192], "min_counted_items_per_cell": 20},
+    "dtypes": {"quality": "GPU: fp32 at 512/1024/2048, fp16 autocast at 4096/8192", "latency": "i7-8700 fp32, 6 threads"},
+    "final_split": {"full_lengths": [4096, 8192], "cases_at_full_lengths": 200,
+                    "rule": "all 200 final cases at 4,096 and 8,192 tokens; dev and calibration keep the recorded half-sample there"},
+    "stop_conditions": ["training-free stop", "candidate stop (dropping wins over rescue)", "speed stop", "parity stop",
+                        "undecidable", "selection wins", "no change after any final item is scored"],
+}
+
+
+def _file_sha256(path: Path) -> str:
+    """sha256 of the file's exact bytes (docs/gate-plan-v2.md is marked ``-text`` in .gitattributes, so no checkout changes them)."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def plan_v2_body(run_path: Path, plan_md: Optional[Path] = None, parity_ids: Optional[Path] = None,
+                 revision: int = 0, reason: str = "") -> Dict[str, Any]:
+    body: Dict[str, Any] = {"version": 2, "revision": revision, "version_reason": PLAN_V2_REASON,
+                            "revision_reason": reason or "pre-registration emission",
+                            "supersedes": "none: plan v1 (evaluation_plan.json, fingerprint 58ea2c38f100d4f6) stays as recorded",
+                            "plan": PLAN_V2, "final_scored_items": count_final_items(run_path)}
+    if plan_md is not None:
+        body["plan_markdown"] = {"path": Path(plan_md).as_posix(), "sha256": _file_sha256(plan_md)}
+    if parity_ids is not None:
+        ids = json.loads(Path(parity_ids).read_text(encoding="utf-8"))
+        if ids.get("seed") != PLAN_V2["parity"]["seed"]:
+            raise ValueError("the parity ids were drawn with seed %s, the plan fixes %s" % (ids.get("seed"), PLAN_V2["parity"]["seed"]))
+        body["parity_ids"] = {"path": Path(parity_ids).as_posix(), "ids_sha256": ids["ids_sha256"],
+                              "dev_split_fingerprint": ids["dev_split_fingerprint"]}
+    return body
+
+
+def freeze_plan_v2(run_path: Path, plan_md: Optional[Path] = None, parity_ids: Optional[Path] = None,
+                   new_version: bool = False, reason: str = "") -> Dict[str, Any]:
+    """Write ``evaluation_plan_v2.json`` and ``.md``. Never touches the v1 file; refuses when a final item was scored,
+    or when a v2 file exists unless ``new_version`` and a reason are given (the revision then increases)."""
+    run_path = Path(run_path)
+    n_final = count_final_items(run_path)
+    if n_final:
+        raise SplitLocked("%d final-split items appear in the results; the plan must be frozen before any final scoring (FR-030)" % n_final)
+    existing = run_path / PLAN_V2_FILE
+    revision = 0
+    if existing.exists():
+        old = json.loads(existing.read_text(encoding="utf-8"))
+        if not new_version:
+            raise Refusal("fingerprint_mismatch", "%s exists (revision %s); pass --new-version with a reason to create revision %s"
+                          % (PLAN_V2_FILE, old.get("revision"), old.get("revision", 0) + 1))
+        if not reason.strip():
+            raise ValueError("--new-version needs a stated reason")
+        revision = int(old.get("revision", 0)) + 1
+    body = plan_v2_body(run_path, plan_md, parity_ids, revision, reason)
+    body["fingerprint"] = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    body["frozen_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    write_json(run_path, PLAN_V2_FILE, body)
+    (run_path / "evaluation_plan_v2.md").write_text(render_plan_v2(body), encoding="utf-8")
+    return body
+
+
+def render_plan_v2(b: Dict[str, Any]) -> str:
+    p = b["plan"]
+    lines = ["# Compression gate plan v2 (revision %s)" % b["revision"], "",
+             "Fingerprint `%s`, frozen %s. Final-split items scored so far: **%d**." % (b["fingerprint"][:16], b["frozen_at"], b["final_scored_items"]),
+             "", "- reason: %s (%s)" % (b["version_reason"], b["revision_reason"])]
+    if "plan_markdown" in b:
+        lines.append("- plan text: `%s`, sha256 `%s`" % (b["plan_markdown"]["path"], b["plan_markdown"]["sha256"]))
+    if "parity_ids" in b:
+        lines.append("- parity ids: `%s`, sha256 `%s`" % (b["parity_ids"]["path"], b["parity_ids"]["ids_sha256"]))
+    f = p["tiers"]["F"]
+    lines += ["", "## Tier F thresholds",
+              "- F1: agreement lower bound >= %.0f%%" % (100 * f["F1"]["lower_bound_min"]),
+              "- F2: (candidate - native) accuracy lower bound >= %+.0f points" % f["F2"]["lower_bound_min_points"],
+              "- F3: scaled ECE at most %.2f above native" % f["F3"]["max_excess"],
+              "- F4: i7-8700 p50 at least %.0f%% below optimized native, p95 not worse" % (100 * f["F4"]["min_gain"]),
+              "", "## Parity", "- margin %.2f, seed %d, %d cases per set, lengths %s" % (
+                  p["parity"]["margin"], p["parity"]["seed"], p["parity"]["cases_per_set"], p["parity"]["lengths"]),
+              "", "## Final split", "- %s" % p["final_split"]["rule"], ""]
+    return "\n".join(lines)

@@ -1153,6 +1153,11 @@ def _freeze_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--available-cases", type=int, default=200, help="final-split cases available (default 200)")
     p.add_argument("--new-version", action="store_true", help="create a new plan version (needs --reason)")
     p.add_argument("--reason", default="", help="why a new plan version is needed")
+    p.add_argument("--plan-version", type=int, choices=[1, 2], default=1,
+                   help="1 (default): the final-test protocol from the dev pilot; 2: the compression-gate plan "
+                        "(evaluation_plan_v2.json), built from constants")
+    p.add_argument("--plan-md", default=None, help="plan v2: the plan text whose sha256 is recorded (docs/gate-plan-v2.md)")
+    p.add_argument("--parity-ids", default=None, help="plan v2: the drawn parity ids to record (specs/008-tier-f-screen/parity-ids.json)")
 
 
 @command("freeze-plan", "Freeze the final-test protocol and sample size from the dev pilot (evaluation_plan.json).",
@@ -1160,7 +1165,16 @@ def _freeze_args(p: argparse.ArgumentParser) -> None:
 def _cmd_freeze_plan(args: argparse.Namespace) -> int:
     from . import evalplan
     from .results import Refusal
+    from pathlib import Path
     try:
+        if args.plan_version == 2:
+            plan = evalplan.freeze_plan_v2(args.run_path, plan_md=Path(args.plan_md) if args.plan_md else None,
+                                           parity_ids=Path(args.parity_ids) if args.parity_ids else None,
+                                           new_version=args.new_version, reason=args.reason)
+            print("plan v2 revision %s written; fingerprint %s" % (plan["revision"], plan["fingerprint"][:16]))
+            print("final-split items scored: %d" % plan["final_scored_items"])
+            print(args.run_path / evalplan.PLAN_V2_FILE)
+            return EXIT_OK
         plan = evalplan.freeze_plan(args.run_path, available=args.available_cases, seed=args.seed,
                                     new_version=args.new_version, reason=args.reason)
     except (Refusal, ValueError) as exc:
@@ -1448,3 +1462,32 @@ def _cmd_tier_e(args: argparse.Namespace) -> int:
         return EXIT_OK
     except (Refusal, FileNotFoundError, ValueError, tier_e.TierEError) as exc:
         raise ToolError(str(exc))
+
+
+def _parity_draw_args(p: argparse.ArgumentParser) -> None:
+    from . import parity_draw
+    _data_root_arg(p)
+    p.add_argument("--parity-seed", type=int, default=parity_draw.PARITY_SEED, help="default: the seed fixed in docs/gate-plan-v2.md")
+    p.add_argument("--out", default=None, help="write the drawn ids (JSON) here; default: print only")
+
+
+@command("parity-draw", "Draw the two fresh 20-case parity sets from splits.json (deterministic, no model, no run).",
+         _parity_draw_args)
+def _cmd_parity_draw(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+    from . import data, parity_draw
+    try:
+        splits = data.read_data_json("splits.json", args.data_root)
+        body = parity_draw.draw_fresh_sets(splits, seed=args.parity_seed)
+    except (FileNotFoundError, parity_draw.ParityDrawError) as exc:
+        raise ToolError(str(exc))
+    problems = parity_draw.check_sets(body, splits)
+    if problems:
+        raise ToolError("the drawn sets break the plan's rule: %s" % problems)
+    text = json.dumps(body, indent=2, sort_keys=True) + "\n"
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8", newline="\n")
+        print(args.out)
+    print("seed %d, ids sha256 %s" % (body["seed"], body["ids_sha256"]))
+    return EXIT_OK

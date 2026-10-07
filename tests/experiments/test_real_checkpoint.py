@@ -161,3 +161,30 @@ def test_real_local_layers_exact_kernel_matches_native_layer_on_identical_inputs
             exact = V._exact_forward(layer.attn, 64)(*args, **kwargs)[0]
             worst[i] = float((native - exact).abs()[valid].max())
     assert max(worst.values()) <= 1e-5, worst
+
+
+# --------------------------------------------------------------------------- laya:008: candidate CPU paths vs mask-only (written, not run)
+
+@pytest.mark.parametrize("length", [512, 2048])
+@pytest.mark.parametrize("name", ["a1", "b1"])
+def test_real_candidate_cpu_path_matches_its_mask_only_reference(typed_agent, name, length):
+    """Real layers and weights: the CPU path equals the mask-only reference (logits within 1e-4 here; the fixture asserts 1e-5)."""
+    import torch
+    from experiments import variants as V
+    from laya.common import build_sequence, collate_items
+    state = ("the customer reported a delayed delivery and asked for a refund on the order " * 400)
+    q = {"t": "choice", "ins": "which action should be taken", "crit": {"a": "refund", "b": "replace", "c": "escalate"}}
+    ids, markers = build_sequence(typed_agent.tok, state, q, length, 192)
+    assert len(ids) == length, "the state must be long enough to fill %d tokens" % length
+    b = collate_items([[{"ids": ids, "markers": markers, "qtype": 0}]], typed_agent.tok.pad_token_id)
+    typed_agent.model.eval()
+
+    def run(variant):
+        rec = V.apply_variant(typed_agent, variant, reversible=True)
+        try:
+            with torch.no_grad():
+                return typed_agent.model(b["input_ids"], b["attention_mask"], b["marker_pos"], b["marker_mask"], b["qtype"])
+        finally:
+            rec["restore"]()
+    cpu, ref = run(name), run(name + "_mask")
+    assert float((cpu[0] - ref[0]).abs().max()) < 1e-4 and float((cpu[1] - ref[1]).abs().max()) < 1e-4

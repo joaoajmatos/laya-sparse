@@ -1353,3 +1353,98 @@ def _cmd_golden(args: argparse.Namespace) -> int:
         export_tokenizer(out, checkpoint=args.checkpoint)
         print(out)
     return EXIT_OK
+
+
+def _tier_e_args(p: argparse.ArgumentParser) -> None:
+    from . import tier_e
+    _data_root_arg(p)
+    _phase2_defaults(p)
+    p.add_argument("action", choices=["probs", "compare", "report"],
+                   help="probs: E1 (probabilities and per-local-layer differences, CPU fp32); compare: E2 (predictions vs "
+                        "a reference run); report: E1/E2/E3 verdicts")
+    p.add_argument("--families-id", default=None, help="item families (default: the most recently built)")
+    p.add_argument("--lengths", type=int_list, default=None,
+                   help="probs: lengths to measure (default %s); one batch per call keeps each run short" % (tier_e.E1_LENGTHS,))
+    p.add_argument("--items-per-length", type=_positive_int, default=tier_e.E1_ITEMS_PER_LENGTH)
+    p.add_argument("--candidate-condition", default="native.local_exact_fastpath_off.cpu",
+                   help="compare: condition id prefix of the candidate's quality predictions (length appended as .L<n>)")
+    p.add_argument("--candidate-run", default=None, help="compare/report: run id holding the candidate's eval and latency results")
+    p.add_argument("--reference-run", default="p2-dev", help="compare: run id holding the reference native CPU predictions")
+    p.add_argument("--reference-root", default=None,
+                   help="compare: results directory that holds the reference run (default: this checkout's experiments/results; "
+                        "a gate run from a clean worktree points it at the main checkout's, read only)")
+    p.add_argument("--latency-run", default=None, help="report: run id of the latency measurements (default: --candidate-run)")
+    p.add_argument("--allow-dirty", action="store_true", help="tests only: a gate run needs a clean git tree")
+    p.add_argument("--dry-run", action="store_true", help="probs: print the item counts and the estimated CPU hours, run nothing")
+
+
+def _tier_e_estimate_hours(lengths, n_items: int) -> float:
+    # Estimated (labeled): native fastpath_off p50 from p2-dev (512/2K/8K measured; 1K and 4K interpolated from the
+    # fast-path-on measurements), exact kernel about 0.6x of native at 8K and 1.0x at 512; two passes (hooks add a little).
+    native = {512: 1.8, 1024: 4.0, 2048: 8.1, 4096: 24.0, 8192: 60.0}
+    ratio = {512: 1.0, 1024: 0.9, 2048: 0.8, 4096: 0.7, 8192: 0.6}
+    return sum(n_items * native[L] * (1.0 + ratio[L]) for L in lengths) / 3600.0
+
+
+@command("tier-e", "Tier E check of the compression gate (laya:007): exact local-attention kernel E1/E2/E3.", _tier_e_args)
+def _cmd_tier_e(args: argparse.Namespace) -> int:
+    from pathlib import Path
+    from . import data, families, results, tier_e
+    from .results import Refusal
+    run = args.run_path
+    try:
+        if args.action == "probs":
+            lengths = list(args.lengths or tier_e.E1_LENGTHS)
+            bad = [L for L in lengths if L not in tier_e.E1_LENGTHS]
+            if bad:
+                raise ToolError("lengths must be among %s, got %s" % (tier_e.E1_LENGTHS, bad))
+            est = _tier_e_estimate_hours(lengths, args.items_per_length)
+            print("E1 probs: %d lengths x %d items, estimated %.2f CPU hours (estimate, i7-8700 fp32)"
+                  % (len(lengths), args.items_per_length, est))
+            if args.dry_run:
+                return EXIT_OK
+            code = tier_e.require_clean_tree(args.allow_dirty)
+            fid = families.current_families_id(args.data_root, args.families_id)
+            splits = data.read_data_json("splits.json", args.data_root)
+            items = list(families.read_items(families.items_dir(fid, args.data_root) / "dev.jsonl.gz"))
+            by_len = {L: tier_e.e1_items(items, splits["variant_sample"], L, args.items_per_length) for L in lengths}
+            short = {L: len(v) for L, v in by_len.items() if len(v) < args.items_per_length}
+            if short:
+                raise ToolError("fewer items than requested at %s" % short)
+            paths = tier_e.run_probs(run, args.model, args.revision, args.threads, by_len, code, log=print)
+            for p in paths:
+                print(p)
+            return EXIT_OK
+        code = tier_e.require_clean_tree(args.allow_dirty)
+        if args.action == "compare":
+            cand_run = results.run_dir(args.candidate_run or args.run_id)
+            ref_run = results.run_dir(args.reference_run, args.reference_root)
+            cand, ref = {}, {}
+            for L in tier_e.PARITY_LENGTHS:
+                cand.update(tier_e._load_predictions(cand_run, "quality", "%s.L%d" % (args.candidate_condition, L)))
+                ref.update(tier_e._load_predictions(ref_run, "quality", "native.none.cpu.L%d" % L))
+            out = tier_e.compare_predictions(cand, ref, {512: 95, 2048: 100, 8192: 100})
+            print(results.write_json(run, "%s/e2.json" % tier_e.SUBDIR, out))
+            print("E2: %d items, %d changed, %d missing -> %s" % (out["n"], out["changed"], out["missing"],
+                                                              "passed" if out["passed"] else "FAILED"))
+            return EXIT_OK
+        # report
+        base = Path(run) / tier_e.SUBDIR
+        e1 = None
+        per = {}
+        for L in tier_e.E1_LENGTHS:
+            f = base / ("probs.L%d.json" % L)
+            if f.exists():
+                per[L] = results.read_json(run, "%s/%s" % (tier_e.SUBDIR, f.name))
+        if per:
+            e1 = tier_e.summarize_e1(per)
+        e2 = results.read_json(run, "%s/e2.json" % tier_e.SUBDIR) if (base / "e2.json").exists() else None
+        lat_run = results.run_dir(args.latency_run or args.candidate_run or args.run_id)
+        lat = tier_e.read_latency(lat_run)
+        e3 = tier_e.summarize_e3(lat) if lat else None
+        rep = tier_e.build_report(run, e1, e2, e3, code)
+        print(results.write_json(run, "%s/report.json" % tier_e.SUBDIR, rep))
+        print("verdicts:", rep["verdicts"])
+        return EXIT_OK
+    except (Refusal, FileNotFoundError, ValueError, tier_e.TierEError) as exc:
+        raise ToolError(str(exc))
